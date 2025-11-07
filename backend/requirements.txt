@@ -1,0 +1,17 @@
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+pydantic==2.5.0
+pydantic-settings==2.1.0
+sqlalchemy==2.0.23
+alembic==1.13.1
+psycopg2-binary==2.9.9
+celery==5.3.4
+redis==5.0.1
+redbeat>=2.0
+cryptography==41.0.7
+google-api-python-client==2.108.0
+google-auth==2.25.2
+python-multipart==0.0.6
+python-dotenv==1.0.0
+passlib[bcrypt]==1.7.4
+aiohttp==3.9.1

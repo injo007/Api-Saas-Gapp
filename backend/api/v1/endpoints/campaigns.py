@@ -8,6 +8,7 @@ import schemas
 from database import get_db
 from models import CampaignStatus
 from utils.ultra_fast_sender import UltraFastSender, ThreadedUltraFastSender
+from tasks import send_campaign_task
 
 router = APIRouter()
 
