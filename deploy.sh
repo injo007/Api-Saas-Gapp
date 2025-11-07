@@ -24,7 +24,7 @@ error() {
     exit 1
 }
 
-# Clean up all old deployment files
+# Clean up all old deployment files and ensure fresh start
 cleanup_old_files() {
     log "Cleaning up old deployment files..."
     rm -f fix-installation.sh fix-deployment.sh nuclear-fix-deployment.sh
@@ -32,10 +32,17 @@ cleanup_old_files() {
     rm -f fix-poetry.sh fix-copy-command.sh force-rebuild.sh clear-cache-rebuild.sh
     rm -f verify-project-structure.sh frontend-fix.sh quick-fix.sh immediate-fix.sh
     rm -f complete-frontend-fix.sh deploy-final.sh check-status.sh status-check.md
-    rm -f deploy.bat DEPLOYMENT.md nginx-frontend.conf
+    rm -f deploy.bat DEPLOYMENT.md nginx-frontend.conf deploy_old.sh
     rm -f backend/Dockerfile.old docker-compose-frontend-fix.yml docker-compose-backup.yml
-    rm -f Dockerfile nginx-frontend.conf
-    log "Old files cleaned up"
+    rm -f Dockerfile nginx-frontend.conf docker-compose-frontend-fix.yml
+    
+    # Stop and remove all containers
+    docker-compose down --remove-orphans --volumes || true
+    docker container prune -f || true
+    docker image prune -f || true
+    docker system prune -f || true
+    
+    log "Complete cleanup finished"
 }
 
 # Detect OS and install dependencies
@@ -134,6 +141,23 @@ def root():
 EOF
     fi
 
+    # Fix React component syntax errors
+    log "Fixing React component syntax errors..."
+    
+    # Fix DashboardView.tsx syntax error - missing closing bracket on line 160
+    if [ -f "components/views/DashboardView.tsx" ]; then
+        # Create a backup
+        cp components/views/DashboardView.tsx components/views/DashboardView.tsx.backup
+        
+        # Fix the specific syntax error on line 160 - add missing closing bracket
+        sed -i '159s/})$/})}/' components/views/DashboardView.tsx
+        
+        # Ensure proper indentation and JSX syntax
+        sed -i '160s/^        /          /' components/views/DashboardView.tsx
+        
+        log "Fixed DashboardView.tsx missing closing bracket syntax error"
+    fi
+    
     # Create package.json for frontend
     log "Creating package.json..."
     cat > package.json << 'EOF'
@@ -387,17 +411,37 @@ main() {
 # Handle arguments
 case "${1:-}" in
     "clean")
+        log "Deep cleaning system..."
         cleanup_old_files
-        docker-compose down --remove-orphans
-        docker system prune -f
+        docker-compose down --remove-orphans --volumes
+        docker system prune -af --volumes
+        log "Deep clean completed!"
         ;;
     "config")
+        log "Fixing configurations only..."
         fix_all_configurations
+        log "Configurations fixed!"
         ;;
     "deploy")
+        log "Deploying application only..."
         deploy_application
         ;;
+    "reinstall")
+        log "Complete reinstall - cleaning everything first..."
+        cleanup_old_files
+        install_dependencies
+        fix_all_configurations
+        deploy_application
+        show_status
+        ;;
+    "status")
+        log "Current system status:"
+        docker-compose ps
+        curl -s http://localhost:8000/health && echo " - Backend: ✅ Healthy" || echo " - Backend: ❌ Not responding"
+        curl -s http://localhost:3000 >/dev/null && echo " - Frontend: ✅ Accessible" || echo " - Frontend: ❌ Not accessible"
+        ;;
     *)
+        log "Starting complete Speed-Send deployment..."
         main
         ;;
 esac
