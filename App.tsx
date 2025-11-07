@@ -29,7 +29,9 @@ const App: React.FC = () => {
   const [errorLoadingCampaigns, setErrorLoadingCampaigns] = useState<string | null>(null);
 
   const { addToast } = useToast();
-  const api = createApiWithToast(addToast); // Create API instance with toast integration
+  
+  // Create API instance once with useMemo to prevent infinite re-renders
+  const api = React.useMemo(() => createApiWithToast(addToast), [addToast]);
 
   const fetchAccounts = useCallback(async () => {
     setIsLoadingAccounts(true);
@@ -43,7 +45,7 @@ const App: React.FC = () => {
     } finally {
       setIsLoadingAccounts(false);
     }
-  }, [addToast, api]);
+  }, [api, addToast]);
 
   const fetchCampaigns = useCallback(async () => {
     setIsLoadingCampaigns(true);
@@ -57,7 +59,7 @@ const App: React.FC = () => {
     } finally {
       setIsLoadingCampaigns(false);
     }
-  }, [addToast, api]);
+  }, [api, addToast]);
 
   // Initial data fetch
   useEffect(() => {
@@ -79,9 +81,9 @@ const App: React.FC = () => {
                 setCampaigns(campaignsData);
             } catch (error) {
                 console.error("Failed to poll for campaign updates:", error);
-                // Optionally addToast here if polling failures are critical
+                // Don't show toast for polling errors to avoid spam
             }
-        }, 5000); // Poll every 5 seconds
+        }, 10000); // Poll every 10 seconds (reduced frequency)
     }
 
     return () => {
@@ -89,7 +91,7 @@ const App: React.FC = () => {
         clearInterval(pollInterval);
       }
     };
-  }, [campaigns, api]); // Depend on campaigns array to re-evaluate polling condition
+  }, [campaigns.some(c => c.status === CampaignStatus.SENDING), api]); // Only depend on whether any campaign is sending
 
 
   const handleAddAccount = async (formData: FormData) => {
