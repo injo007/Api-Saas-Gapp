@@ -83,7 +83,7 @@ services:
       redis:
         condition: service_healthy
     # Start Celery beat for scheduled tasks
-    command: celery -A tasks.celery_app beat -l info --pidfile=/tmp/celerybeat.pid --scheduler=redbeat.RedBeatScheduler
+    command: celery -A tasks.celery_app beat -l info --pidfile=/tmp/celerybeat.pid
     restart: unless-stopped
   
   frontend:
