@@ -1,582 +1,454 @@
 #!/bin/bash
 
-# Speed-Send Automated Deployment Script
-# One script for: Install, Reinstall, Fix, and Manage
-# Works on Ubuntu 22.04+ with zero manual intervention
+# Speed-Send Email Platform - Complete Deployment Script
+# This script installs everything needed on a fresh server and deploys the application
 
-set -e
+set -e  # Exit on any error
 
 # Color codes for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
-PURPLE='\033[0;35m'
-CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
-# Emoji for better UX
-ROCKET="🚀"
-CHECK="✅"
-CROSS="❌"
-WARNING="⚠️"
-INFO="ℹ️"
-GEAR="⚙️"
-FIRE="🔥"
-
-# Print functions
-print_header() {
-    echo ""
-    echo -e "${PURPLE}===============================================${NC}"
-    echo -e "${PURPLE}$1${NC}"
-    echo -e "${PURPLE}===============================================${NC}"
-    echo ""
+# Logging function
+log() {
+    echo -e "${GREEN}[$(date +'%Y-%m-%d %H:%M:%S')] $1${NC}"
 }
 
-print_step() {
-    echo -e "${BLUE}${GEAR} $1${NC}"
+warn() {
+    echo -e "${YELLOW}[WARNING] $1${NC}"
 }
 
-print_success() {
-    echo -e "${GREEN}${CHECK} $1${NC}"
+error() {
+    echo -e "${RED}[ERROR] $1${NC}"
+    exit 1
 }
 
-print_error() {
-    echo -e "${RED}${CROSS} $1${NC}"
+# Check if running as root
+check_root() {
+    if [[ $EUID -eq 0 ]]; then
+        warn "Running as root. This is not recommended for production."
+        read -p "Continue anyway? (y/N): " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            exit 1
+        fi
+    fi
 }
 
-print_warning() {
-    echo -e "${YELLOW}${WARNING} $1${NC}"
-}
-
-print_info() {
-    echo -e "${CYAN}${INFO} $1${NC}"
-}
-
-# Global variables
-DOCKER_COMPOSE_CMD=""
-RETRY_COUNT=3
-DEPLOYMENT_MODE="install"
-
-# Parse command line arguments
-parse_arguments() {
-    while [[ $# -gt 0 ]]; do
-        case $1 in
-            --reinstall)
-                DEPLOYMENT_MODE="reinstall"
-                shift
-                ;;
-            --fix)
-                DEPLOYMENT_MODE="fix"
-                shift
-                ;;
-            --reset)
-                DEPLOYMENT_MODE="reset"
-                shift
-                ;;
-            --help)
-                show_help
-                exit 0
-                ;;
-            *)
-                print_error "Unknown option: $1"
-                show_help
-                exit 1
-                ;;
-        esac
-    done
-}
-
-show_help() {
-    echo "Speed-Send Deployment Script"
-    echo ""
-    echo "Usage: ./deploy.sh [OPTIONS]"
-    echo ""
-    echo "Options:"
-    echo "  (no options)    Fresh installation"
-    echo "  --reinstall     Complete reinstallation (keeps data)"
-    echo "  --fix           Fix broken deployment"
-    echo "  --reset         Complete reset (destroys all data)"
-    echo "  --help          Show this help message"
-}
-
-# Detect system
-detect_system() {
-    print_step "Detecting system..."
-    
+# Detect OS
+detect_os() {
+    log "Detecting operating system..."
     if [[ "$OSTYPE" == "linux-gnu"* ]]; then
-        if [ -f /etc/os-release ]; then
-            . /etc/os-release
-            if [[ "$ID" == "ubuntu" ]]; then
-                print_success "Ubuntu $VERSION_ID detected"
-                if [[ "$VERSION_ID" < "20.04" ]]; then
-                    print_warning "Ubuntu 20.04+ recommended. Current: $VERSION_ID"
-                fi
-            else
-                print_warning "Non-Ubuntu Linux detected: $PRETTY_NAME"
-            fi
+        if [ -f /etc/debian_version ]; then
+            OS="ubuntu"
+            log "Detected Ubuntu/Debian system"
+        elif [ -f /etc/redhat-release ]; then
+            OS="centos"
+            log "Detected CentOS/RHEL system"
+        else
+            error "Unsupported Linux distribution"
         fi
     else
-        print_error "This script is designed for Ubuntu/Linux systems"
-        exit 1
+        error "Unsupported operating system: $OSTYPE"
     fi
 }
 
-# Install Docker automatically
+# Update system packages
+update_system() {
+    log "Updating system packages..."
+    if [ "$OS" = "ubuntu" ]; then
+        sudo apt-get update -y
+        sudo apt-get upgrade -y
+        sudo apt-get install -y curl wget git unzip software-properties-common apt-transport-https ca-certificates gnupg lsb-release
+    elif [ "$OS" = "centos" ]; then
+        sudo yum update -y
+        sudo yum install -y curl wget git unzip epel-release
+    fi
+}
+
+# Install Docker
 install_docker() {
-    print_step "Installing Docker..."
+    log "Installing Docker..."
     
     if command -v docker &> /dev/null; then
-        print_success "Docker already installed: $(docker --version)"
-        return 0
+        log "Docker already installed. Version: $(docker --version)"
+        return
     fi
     
-    # Remove old versions
-    sudo apt-get remove -y docker docker-engine docker.io containerd runc 2>/dev/null || true
+    if [ "$OS" = "ubuntu" ]; then
+        # Remove old versions
+        sudo apt-get remove -y docker docker-engine docker.io containerd runc || true
+        
+        # Add Docker's official GPG key
+        curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+        
+        # Set up the stable repository
+        echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+        
+        # Install Docker Engine
+        sudo apt-get update -y
+        sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+        
+    elif [ "$OS" = "centos" ]; then
+        # Install Docker on CentOS
+        sudo yum install -y yum-utils
+        sudo yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+        sudo yum install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+    fi
     
-    # Update package index
-    sudo apt-get update -y
-    
-    # Install dependencies
-    sudo apt-get install -y \
-        ca-certificates \
-        curl \
-        gnupg \
-        lsb-release \
-        software-properties-common
-    
-    # Add Docker's GPG key
-    sudo mkdir -p /etc/apt/keyrings
-    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-    
-    # Add Docker repository
-    echo \
-        "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
-        $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-    
-    # Install Docker
-    sudo apt-get update -y
-    sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+    # Start and enable Docker
+    sudo systemctl start docker
+    sudo systemctl enable docker
     
     # Add current user to docker group
     sudo usermod -aG docker $USER
     
-    # Start Docker service
-    sudo systemctl start docker
-    sudo systemctl enable docker
-    
-    print_success "Docker installed successfully"
+    log "Docker installed successfully!"
 }
 
-# Install Docker Compose
+# Install Docker Compose (standalone version as backup)
 install_docker_compose() {
-    print_step "Setting up Docker Compose..."
+    log "Installing Docker Compose..."
     
-    # Check if docker compose plugin is available
-    if docker compose version &> /dev/null; then
-        DOCKER_COMPOSE_CMD="docker compose"
-        print_success "Docker Compose plugin available"
-        return 0
-    fi
-    
-    # Check if docker-compose is available
     if command -v docker-compose &> /dev/null; then
-        DOCKER_COMPOSE_CMD="docker-compose"
-        print_success "Docker Compose standalone available"
-        return 0
+        log "Docker Compose already installed. Version: $(docker-compose --version)"
+        return
     fi
     
-    # Install docker-compose standalone
-    print_step "Installing Docker Compose standalone..."
-    DOCKER_COMPOSE_VERSION="2.20.0"
-    sudo curl -L "https://github.com/docker/compose/releases/download/v${DOCKER_COMPOSE_VERSION}/docker-compose-$(uname -s)-$(uname -m)" \
-        -o /usr/local/bin/docker-compose
+    # Install latest Docker Compose
+    DOCKER_COMPOSE_VERSION=$(curl -s https://api.github.com/repos/docker/compose/releases/latest | grep tag_name | cut -d '"' -f 4)
+    sudo curl -L "https://github.com/docker/compose/releases/download/${DOCKER_COMPOSE_VERSION}/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
     sudo chmod +x /usr/local/bin/docker-compose
     
-    DOCKER_COMPOSE_CMD="docker-compose"
-    print_success "Docker Compose installed"
+    log "Docker Compose installed successfully!"
 }
 
-# Install system dependencies
-install_dependencies() {
-    print_step "Installing system dependencies..."
+# Install Node.js and npm (for frontend building if needed)
+install_nodejs() {
+    log "Installing Node.js..."
     
-    sudo apt-get update -y
-    sudo apt-get install -y \
-        curl \
-        wget \
-        openssl \
-        net-tools \
-        postgresql-client \
-        redis-tools \
-        jq
-    
-    print_success "System dependencies installed"
-}
-
-# Kill processes using required ports
-free_ports() {
-    print_step "Freeing required ports..."
-    
-    local ports=(3000 8000 5432 6379)
-    
-    for port in "${ports[@]}"; do
-        if netstat -tuln 2>/dev/null | grep -q ":$port "; then
-            print_warning "Port $port is in use, attempting to free it..."
-            sudo fuser -k $port/tcp 2>/dev/null || true
-            sleep 2
-        fi
-    done
-    
-    print_success "Ports freed"
-}
-
-# Generate secure random strings
-generate_secret() {
-    openssl rand -hex 32
-}
-
-generate_encryption_key() {
-    openssl rand -base64 32
-}
-
-generate_password() {
-    openssl rand -base64 32 | tr -d "=+/" | cut -c1-25
-}
-
-# Setup environment configuration
-setup_environment() {
-    print_step "Setting up environment configuration..."
-    
-    if [ ! -f .env.template ]; then
-        print_error ".env.template not found!"
-        exit 1
+    if command -v node &> /dev/null; then
+        log "Node.js already installed. Version: $(node --version)"
+        return
     fi
     
-    # Always regenerate .env for fresh config
-    cp .env.template .env
+    # Install Node.js 18.x
+    if [ "$OS" = "ubuntu" ]; then
+        curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
+        sudo apt-get install -y nodejs
+    elif [ "$OS" = "centos" ]; then
+        curl -fsSL https://rpm.nodesource.com/setup_18.x | sudo bash -
+        sudo yum install -y nodejs
+    fi
     
-    # Generate secure values
-    SECRET_KEY=$(generate_secret)
-    ENCRYPTION_KEY=$(generate_encryption_key)
-    DB_PASSWORD=$(generate_password)
-    
-    # Update .env file
-    sed -i "s/SECRET_KEY=.*/SECRET_KEY=$SECRET_KEY/" .env
-    sed -i "s/ENCRYPTION_KEY=.*/ENCRYPTION_KEY=$ENCRYPTION_KEY/" .env
-    sed -i "s/POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=$DB_PASSWORD/" .env
-    sed -i "s|DATABASE_URL=.*|DATABASE_URL=postgresql://speedsend_user:$DB_PASSWORD@db:5432/speedsend_db|" .env
-    sed -i "s/DEBUG=.*/DEBUG=false/" .env
-    sed -i "s/ENVIRONMENT=.*/ENVIRONMENT=production/" .env
-    
-    print_success "Environment configured with secure keys"
+    log "Node.js installed successfully!"
 }
 
-# Setup project directories
-setup_directories() {
-    print_step "Setting up project directories..."
+# Setup firewall
+setup_firewall() {
+    log "Configuring firewall..."
     
-    mkdir -p uploads
+    if [ "$OS" = "ubuntu" ]; then
+        # Install and configure UFW
+        sudo apt-get install -y ufw
+        sudo ufw --force enable
+        sudo ufw allow ssh
+        sudo ufw allow 80/tcp
+        sudo ufw allow 443/tcp
+        sudo ufw allow 3000/tcp  # Frontend dev port
+        sudo ufw allow 8000/tcp  # Backend dev port
+        sudo ufw reload
+    elif [ "$OS" = "centos" ]; then
+        # Configure firewalld
+        sudo systemctl start firewalld
+        sudo systemctl enable firewalld
+        sudo firewall-cmd --permanent --add-service=ssh
+        sudo firewall-cmd --permanent --add-service=http
+        sudo firewall-cmd --permanent --add-service=https
+        sudo firewall-cmd --permanent --add-port=3000/tcp
+        sudo firewall-cmd --permanent --add-port=8000/tcp
+        sudo firewall-cmd --reload
+    fi
+    
+    log "Firewall configured successfully!"
+}
+
+# Create necessary directories
+create_directories() {
+    log "Creating application directories..."
+    
     mkdir -p logs
-    chmod 755 uploads
-    chmod 755 logs
+    mkdir -p data/postgres
+    mkdir -p data/redis
+    mkdir -p backend/uploads
+    chmod 755 logs data backend/uploads
     
-    print_success "Directories created"
+    log "Directories created successfully!"
 }
 
-# Cleanup previous deployment
-cleanup_deployment() {
-    print_step "Cleaning up previous deployment..."
+# Generate .env file if it doesn't exist
+create_env_file() {
+    log "Setting up environment configuration..."
     
-    # Stop all containers
-    $DOCKER_COMPOSE_CMD down --remove-orphans 2>/dev/null || true
-    
-    if [[ "$DEPLOYMENT_MODE" == "reset" ]]; then
-        print_warning "RESET mode: Destroying all data..."
-        $DOCKER_COMPOSE_CMD down -v 2>/dev/null || true
-        docker system prune -af --volumes 2>/dev/null || true
+    if [ ! -f .env ]; then
+        log "Creating .env file from template..."
+        cp .env.template .env
+        
+        # Generate random secrets
+        JWT_SECRET=$(openssl rand -hex 32)
+        DB_PASSWORD=$(openssl rand -base64 32 | tr -d "=+/" | cut -c1-25)
+        REDIS_PASSWORD=$(openssl rand -base64 32 | tr -d "=+/" | cut -c1-25)
+        
+        # Update .env file with generated values
+        sed -i "s/your-super-secret-jwt-key-here/$JWT_SECRET/g" .env
+        sed -i "s/your-secure-db-password/$DB_PASSWORD/g" .env
+        sed -i "s/your-redis-password/$REDIS_PASSWORD/g" .env
+        
+        warn "Please edit .env file with your specific configuration:"
+        warn "- Gmail API credentials"
+        warn "- Domain settings"
+        warn "- SMTP settings (if needed)"
+        warn "- Other environment-specific values"
     else
-        # Clean up orphaned containers and networks
-        docker system prune -f 2>/dev/null || true
+        log ".env file already exists"
     fi
-    
-    print_success "Cleanup completed"
 }
 
-# Build Docker images
-build_images() {
-    print_step "Building Docker images..."
+# Fix common Docker issues
+fix_docker_issues() {
+    log "Fixing common Docker issues..."
     
-    # Always build backend with no cache to avoid Poetry issues
-    print_step "Building backend with no cache..."
-    $DOCKER_COMPOSE_CMD build --no-cache backend
+    # Ensure Docker daemon is running
+    sudo systemctl restart docker
     
-    # Build other services
-    if [[ "$DEPLOYMENT_MODE" == "reinstall" ]] || [[ "$DEPLOYMENT_MODE" == "reset" ]]; then
-        print_step "Building all other services with no cache..."
-        $DOCKER_COMPOSE_CMD build --no-cache frontend
+    # Clean up any existing containers/images that might conflict
+    docker system prune -f || true
+    
+    # Remove any existing project containers
+    docker-compose down --remove-orphans || true
+    
+    log "Docker issues fixed!"
+}
+
+# Build and start the application
+deploy_application() {
+    log "Building and deploying Speed-Send application..."
+    
+    # Ensure we have the latest code
+    if [ -d .git ]; then
+        log "Updating code from Git..."
+        git pull origin main || git pull origin master || warn "Could not pull latest code"
+    fi
+    
+    # Build and start containers
+    log "Building Docker containers..."
+    docker-compose build --no-cache
+    
+    log "Starting application..."
+    docker-compose up -d
+    
+    # Wait for services to be ready
+    log "Waiting for services to start..."
+    sleep 30
+    
+    # Check if services are running
+    if docker-compose ps | grep -q "Up"; then
+        log "Application deployed successfully!"
+        log "Frontend: http://localhost:3000"
+        log "Backend API: http://localhost:8000"
+        log "Backend Docs: http://localhost:8000/docs"
     else
-        print_step "Building frontend..."
-        $DOCKER_COMPOSE_CMD build frontend
+        error "Application failed to start. Check logs with: docker-compose logs"
     fi
-    
-    print_success "Docker images built"
 }
 
-# Start database services
-start_database_services() {
-    print_step "Starting database services..."
+# Check application health
+check_health() {
+    log "Checking application health..."
     
-    $DOCKER_COMPOSE_CMD up -d db redis
-    
-    # Wait for database with timeout
-    print_step "Waiting for database to be ready..."
-    local max_attempts=60
-    local attempt=0
-    
-    while [ $attempt -lt $max_attempts ]; do
-        if $DOCKER_COMPOSE_CMD exec -T db pg_isready -U speedsend_user -d speedsend_db &> /dev/null; then
-            break
-        fi
-        echo -n "."
-        sleep 2
-        ((attempt++))
-    done
-    
-    if [ $attempt -eq $max_attempts ]; then
-        print_error "Database failed to start"
-        print_info "Database logs:"
-        $DOCKER_COMPOSE_CMD logs db
-        exit 1
-    fi
-    
-    print_success "Database is ready"
-    
-    # Wait for Redis
-    print_step "Waiting for Redis to be ready..."
-    max_attempts=30
-    attempt=0
-    
-    while [ $attempt -lt $max_attempts ]; do
-        if $DOCKER_COMPOSE_CMD exec -T redis redis-cli ping &> /dev/null; then
-            break
-        fi
-        echo -n "."
-        sleep 2
-        ((attempt++))
-    done
-    
-    if [ $attempt -eq $max_attempts ]; then
-        print_error "Redis failed to start"
-        print_info "Redis logs:"
-        $DOCKER_COMPOSE_CMD logs redis
-        exit 1
-    fi
-    
-    print_success "Redis is ready"
-}
-
-# Start backend services
-start_backend_services() {
-    print_step "Starting backend services..."
-    
-    $DOCKER_COMPOSE_CMD up -d backend
-    
-    # Wait for backend to be healthy
-    print_step "Waiting for backend to be ready..."
-    local max_attempts=60
-    local attempt=0
-    
-    while [ $attempt -lt $max_attempts ]; do
-        if curl -f http://localhost:8000/api/v1/health &> /dev/null; then
-            break
-        fi
-        echo -n "."
-        sleep 2
-        ((attempt++))
-    done
-    
-    if [ $attempt -eq $max_attempts ]; then
-        print_error "Backend failed to start"
-        print_info "Backend logs:"
-        $DOCKER_COMPOSE_CMD logs backend
-        exit 1
-    fi
-    
-    print_success "Backend is ready"
-}
-
-# Run database migrations
-run_migrations() {
-    print_step "Running database migrations..."
-    
-    if $DOCKER_COMPOSE_CMD exec -T backend poetry run alembic upgrade head; then
-        print_success "Database migrations completed"
+    # Check backend health
+    if curl -s http://localhost:8000/health > /dev/null; then
+        log "✓ Backend is healthy"
     else
-        print_error "Database migration failed"
-        print_info "Backend logs:"
-        $DOCKER_COMPOSE_CMD logs backend
-        exit 1
+        warn "✗ Backend health check failed"
     fi
-}
-
-# Start worker services
-start_worker_services() {
-    print_step "Starting worker services..."
     
-    $DOCKER_COMPOSE_CMD up -d celery_worker celery_beat
-    
-    print_success "Worker services started"
-}
-
-# Start frontend services
-start_frontend_services() {
-    print_step "Starting frontend services..."
-    
-    $DOCKER_COMPOSE_CMD up -d frontend
-    
-    # Wait for frontend
-    print_step "Waiting for frontend to be ready..."
-    sleep 15
-    
-    local max_attempts=30
-    local attempt=0
-    
-    while [ $attempt -lt $max_attempts ]; do
-        if curl -f http://localhost:3000 &> /dev/null; then
-            break
-        fi
-        echo -n "."
-        sleep 2
-        ((attempt++))
-    done
-    
-    if [ $attempt -eq $max_attempts ]; then
-        print_warning "Frontend health check timeout (may still be starting)"
+    # Check frontend
+    if curl -s http://localhost:3000 > /dev/null; then
+        log "✓ Frontend is accessible"
     else
-        print_success "Frontend is ready"
+        warn "✗ Frontend is not accessible"
     fi
+    
+    # Show running containers
+    log "Running containers:"
+    docker-compose ps
 }
 
-# Verify deployment
-verify_deployment() {
-    print_step "Verifying deployment..."
+# Setup log rotation
+setup_logging() {
+    log "Setting up log rotation..."
     
-    # Check all services are running
-    local services=("db" "redis" "backend" "celery_worker" "celery_beat" "frontend")
-    local failed_services=()
+    sudo tee /etc/logrotate.d/speed-send << EOF
+/home/$USER/speed-send/logs/*.log {
+    daily
+    missingok
+    rotate 30
+    compress
+    delaycompress
+    notifempty
+    copytruncate
+}
+EOF
     
-    for service in "${services[@]}"; do
-        if $DOCKER_COMPOSE_CMD ps | grep "$service" | grep -q "Up"; then
-            print_success "$service is running"
-        else
-            print_error "$service is not running"
-            failed_services+=("$service")
-        fi
-    done
-    
-    if [ ${#failed_services[@]} -eq 0 ]; then
-        print_success "All services are running"
-    else
-        print_error "Some services failed: ${failed_services[*]}"
-        return 1
-    fi
-    
-    # Test API endpoints
-    if curl -f http://localhost:8000/api/v1/health &> /dev/null; then
-        print_success "Backend API is responding"
-    else
-        print_warning "Backend API health check failed"
-    fi
-    
-    if curl -f http://localhost:3000 &> /dev/null; then
-        print_success "Frontend is responding"
-    else
-        print_warning "Frontend health check failed"
-    fi
+    log "Log rotation configured!"
 }
 
-# Show final status
-show_final_status() {
-    print_header "${FIRE} Speed-Send Deployment Complete!"
+# Create systemd service for auto-start
+create_systemd_service() {
+    log "Creating systemd service for auto-start..."
     
-    echo -e "${GREEN}${ROCKET} Application URLs:${NC}"
-    echo -e "   ${CYAN}Frontend (Web UI):${NC} http://localhost:3000"
-    echo -e "   ${CYAN}Backend API Docs:${NC}  http://localhost:8000/docs"
-    echo -e "   ${CYAN}Backend API ReDoc:${NC} http://localhost:8000/redoc"
-    echo ""
+    sudo tee /etc/systemd/system/speed-send.service << EOF
+[Unit]
+Description=Speed-Send Email Platform
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=true
+WorkingDirectory=/home/$USER/speed-send
+ExecStart=/usr/local/bin/docker-compose up -d
+ExecStop=/usr/local/bin/docker-compose down
+User=$USER
+Group=docker
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    sudo systemctl daemon-reload
+    sudo systemctl enable speed-send.service
     
-    echo -e "${BLUE}${GEAR} Management Commands:${NC}"
-    echo -e "   ${YELLOW}View logs:${NC}        $DOCKER_COMPOSE_CMD logs -f"
-    echo -e "   ${YELLOW}Stop services:${NC}    $DOCKER_COMPOSE_CMD down"
-    echo -e "   ${YELLOW}Restart:${NC}          $DOCKER_COMPOSE_CMD restart"
-    echo -e "   ${YELLOW}Reinstall:${NC}        ./deploy.sh --reinstall"
-    echo -e "   ${YELLOW}Fix issues:${NC}       ./deploy.sh --fix"
-    echo -e "   ${YELLOW}Reset all:${NC}        ./deploy.sh --reset"
-    echo ""
-    
-    echo -e "${GREEN}${INFO} Next Steps:${NC}"
-    echo "1. Open http://localhost:3000 in your browser"
-    echo "2. Navigate to 'Accounts' to add Google Workspace accounts"
-    echo "3. Use 'Ultra-Fast Send' to create high-performance campaigns"
-    echo ""
-    
-    echo -e "${YELLOW}${WARNING} Important Notes:${NC}"
-    echo "• Configure Google Cloud Project with Gmail API enabled"
-    echo "• Set up Domain-Wide Delegation for service accounts"
-    echo "• Use admin email from your Google Workspace domain"
-    echo "• For production: configure SSL, firewall, and monitoring"
-    echo ""
-    
-    # Show container status
-    echo -e "${PURPLE}Container Status:${NC}"
-    $DOCKER_COMPOSE_CMD ps
+    log "Systemd service created and enabled!"
 }
 
-# Error handler
-handle_error() {
-    print_error "Deployment failed at step: $1"
-    print_info "Logs for debugging:"
-    $DOCKER_COMPOSE_CMD logs --tail=50
-    print_info "To fix issues, run: ./deploy.sh --fix"
-    exit 1
+# Display final information
+show_final_info() {
+    log "=================================="
+    log "Speed-Send Platform Deployed Successfully!"
+    log "=================================="
+    echo
+    log "Access URLs:"
+    log "Frontend:     http://$(hostname -I | awk '{print $1}'):3000"
+    log "Backend API:  http://$(hostname -I | awk '{print $1}'):8000"
+    log "API Docs:     http://$(hostname -I | awk '{print $1}'):8000/docs"
+    echo
+    log "Useful Commands:"
+    log "View logs:        docker-compose logs -f"
+    log "Restart app:      docker-compose restart"
+    log "Stop app:         docker-compose down"
+    log "Update app:       git pull && docker-compose up --build -d"
+    echo
+    log "Configuration:"
+    log "Edit .env file to customize settings"
+    log "Application data is stored in ./data/"
+    log "Logs are stored in ./logs/"
+    echo
+    warn "Don't forget to:"
+    warn "1. Configure your Gmail API credentials in .env"
+    warn "2. Set up SSL certificates for production"
+    warn "3. Configure domain DNS settings"
+    warn "4. Review security settings"
+    echo
+    log "Deployment completed successfully! 🚀"
 }
 
 # Main deployment function
 main() {
-    parse_arguments "$@"
+    log "Starting Speed-Send Email Platform deployment..."
+    echo
     
-    print_header "${ROCKET} Speed-Send Automated Deployment"
-    print_info "Mode: $DEPLOYMENT_MODE"
+    # Pre-flight checks
+    check_root
+    detect_os
     
-    # Step 1: System setup
-    detect_system || handle_error "System detection"
-    install_dependencies || handle_error "Dependencies installation"
-    install_docker || handle_error "Docker installation"
-    install_docker_compose || handle_error "Docker Compose setup"
+    # System setup
+    update_system
+    install_docker
+    install_docker_compose
+    install_nodejs
+    setup_firewall
     
-    # Step 2: Environment setup
-    free_ports || handle_error "Port cleanup"
-    setup_environment || handle_error "Environment setup"
-    setup_directories || handle_error "Directory setup"
+    # Application setup
+    create_directories
+    create_env_file
+    fix_docker_issues
     
-    # Step 3: Deployment
-    cleanup_deployment || handle_error "Cleanup"
-    build_images || handle_error "Image building"
-    start_database_services || handle_error "Database services"
-    start_backend_services || handle_error "Backend services"
-    run_migrations || handle_error "Database migrations"
-    start_worker_services || handle_error "Worker services"
-    start_frontend_services || handle_error "Frontend services"
+    # Deploy application
+    deploy_application
     
-    # Step 4: Verification
-    verify_deployment || handle_error "Deployment verification"
+    # Post-deployment setup
+    check_health
+    setup_logging
+    create_systemd_service
     
-    # Step 5: Success
-    show_final_status
+    # Final information
+    show_final_info
 }
 
-# Check if script is being sourced or executed
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-    main "$@"
-fi
+# Handle script arguments
+case "${1:-}" in
+    "install")
+        log "Installing dependencies only..."
+        detect_os
+        update_system
+        install_docker
+        install_docker_compose
+        install_nodejs
+        setup_firewall
+        log "Dependencies installed successfully!"
+        ;;
+    "deploy")
+        log "Deploying application only..."
+        create_directories
+        create_env_file
+        fix_docker_issues
+        deploy_application
+        check_health
+        ;;
+    "restart")
+        log "Restarting application..."
+        docker-compose down
+        docker-compose up -d
+        check_health
+        ;;
+    "logs")
+        log "Showing application logs..."
+        docker-compose logs -f
+        ;;
+    "status")
+        log "Checking application status..."
+        docker-compose ps
+        check_health
+        ;;
+    "update")
+        log "Updating application..."
+        git pull origin main || git pull origin master
+        docker-compose down
+        docker-compose build --no-cache
+        docker-compose up -d
+        check_health
+        ;;
+    "clean")
+        log "Cleaning up Docker resources..."
+        docker-compose down --volumes --remove-orphans
+        docker system prune -af
+        ;;
+    *)
+        main
+        ;;
+esac
