@@ -53,7 +53,7 @@ services:
       redis:
         condition: service_healthy
     # Using --reload for development, remove in production for better performance
-    command: poetry run uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+    command: uvicorn main:app --host 0.0.0.0 --port 8000
     restart: unless-stopped
 
   celery_worker:
@@ -73,7 +73,7 @@ services:
       redis:
         condition: service_healthy
     # Start Celery worker with specified concurrency
-    command: poetry run celery -A tasks.celery_app worker -l info -c ${CELERY_WORKER_CONCURRENCY}
+    command: celery -A tasks.celery_app worker -l info -c ${CELERY_WORKER_CONCURRENCY}
     restart: unless-stopped
 
   celery_beat:
@@ -91,7 +91,7 @@ services:
       redis:
         condition: service_healthy
     # Start Celery beat for scheduled tasks
-    command: poetry run celery -A tasks.celery_app beat -l info --pidfile=/tmp/celerybeat.pid --scheduler=redbeat.RedBeatScheduler
+    command: celery -A tasks.celery_app beat -l info --pidfile=/tmp/celerybeat.pid --scheduler=redbeat.RedBeatScheduler
     restart: unless-stopped
   
   frontend:
