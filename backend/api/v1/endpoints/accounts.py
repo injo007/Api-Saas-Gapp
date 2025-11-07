@@ -1,6 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from typing import List
+import json
+import asyncio
 
 import crud
 import schemas
@@ -135,8 +137,7 @@ def validate_account_credentials(
     if result.get('valid'):
         # Get user count from workspace
         try:
-            import asyncio
-            credentials_dict = crud.json.loads(validation_data.credentials_json)
+            credentials_dict = json.loads(validation_data.credentials_json)
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             try:

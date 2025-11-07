@@ -10,7 +10,7 @@ from models import (Account, Campaign, Recipient, CampaignStatus, RecipientStatu
                    User, UserStatus, RecipientAssignment, SendingBatch)
 import schemas
 from utils.encryption import encrypt_data, decrypt_data
-from utils.gmail_service import get_workspace_users, validate_gmail_credentials
+from utils.gmail_service import get_workspace_users
 from core.config import settings
 
 
@@ -293,6 +293,8 @@ def validate_account_credentials(credentials_json: str, admin_email: str) -> dic
     """Validate account credentials and return info"""
     try:
         credentials_dict = json.loads(credentials_json)
+        # Import here to avoid circular imports
+        from utils.gmail_service import validate_gmail_credentials
         return validate_gmail_credentials(credentials_dict, admin_email)
     except Exception as e:
         return {'valid': False, 'error': str(e)}

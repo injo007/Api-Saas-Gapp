@@ -87,7 +87,11 @@ class Campaign(Base):
     sending_completed_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     
+    # Foreign key to account
+    account_id = Column(Integer, ForeignKey("accounts.id"), nullable=True)
+    
     # Relationships
+    account = relationship("Account", back_populates="campaigns")
     recipients = relationship("Recipient", back_populates="campaign", cascade="all, delete-orphan")
     recipient_assignments = relationship("RecipientAssignment", back_populates="campaign", cascade="all, delete-orphan")
 
