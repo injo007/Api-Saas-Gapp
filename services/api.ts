@@ -28,18 +28,45 @@ export const createApiWithToast = (addToast: (options: { message: string; type: 
       return fetch(`${API_BASE_URL}/accounts?include_users=${includeUsers}`).then(res => handleResponse<AccountWithUsers[]>(res, addToast));
     },
 
-    addAccount: (name: string, adminEmail: string, credentialsJson: string): Promise<Account> => {
-      return fetch(`${API_BASE_URL}/accounts`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          name: name,
-          admin_email: adminEmail,
-          credentials_json: credentialsJson
-        }),
-      }).then(res => handleResponse<Account>(res, addToast));
+    addAccount: (formData: FormData): Promise<Account> => {
+      return new Promise((resolve, reject) => {
+        const name = formData.get('name') as string;
+        const adminEmail = formData.get('admin_email') as string;
+        const jsonFile = formData.get('json_file') as File;
+        
+        if (!jsonFile) {
+          reject(new Error('JSON file is required'));
+          return;
+        }
+        
+        const reader = new FileReader();
+        reader.onload = () => {
+          try {
+            const credentialsJson = reader.result as string;
+            // Validate JSON format
+            JSON.parse(credentialsJson);
+            
+            fetch(`${API_BASE_URL}/accounts`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({
+                name: name,
+                admin_email: adminEmail,
+                credentials_json: credentialsJson
+              }),
+            })
+            .then(res => handleResponse<Account>(res, addToast))
+            .then(resolve)
+            .catch(reject);
+          } catch (error) {
+            reject(new Error('Invalid JSON file format'));
+          }
+        };
+        reader.onerror = () => reject(new Error('Failed to read JSON file'));
+        reader.readAsText(jsonFile);
+      });
     },
 
     validateAccount: (validation: AccountValidation): Promise<AccountValidationResult> => {

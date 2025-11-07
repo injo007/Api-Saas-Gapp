@@ -98,10 +98,9 @@ const App: React.FC = () => {
     try {
       const newAccount = await api.addAccount(formData);
       setAccounts(prev => [...prev, newAccount]);
-      addToast({ message: `Account "${newAccount.name}" added successfully!`, type: 'success' });
+      // Don't show toast here - AccountsView will handle it
     } catch (err) {
-      addToast({ message: `Failed to add account: ${err instanceof Error ? err.message : 'Unknown error'}`, type: 'error' });
-      console.error(err);
+      console.error('Failed to add account:', err);
       throw err; // Re-throw to allow component to handle its own loading/error state
     }
   };
