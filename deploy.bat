@@ -54,6 +54,7 @@ docker-compose down --remove-orphans 2>nul
 
 REM Build and start the application
 echo [INFO] Building and starting Speed-Send platform...
+echo [INFO] Building frontend and backend containers...
 docker-compose build --no-cache
 if %errorlevel% neq 0 (
     echo [ERROR] Failed to build containers

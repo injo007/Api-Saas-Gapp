@@ -406,7 +406,8 @@ start_services() {
     log "Creating production-ready schemas..."
     # The schemas are already correct
     
-    log "Starting all services with proper dependencies..."
+    log "Building and starting all services with proper dependencies..."
+    docker-compose build --no-cache
     docker-compose up -d
     
     log "Waiting for database and Redis to be fully ready..."

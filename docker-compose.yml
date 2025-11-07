@@ -87,14 +87,12 @@ services:
     restart: unless-stopped
   
   frontend:
-    image: nginx:alpine
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
     container_name: speedsend_frontend
     ports:
       - "3000:80"
-    volumes:
-      # Mount the entire project root to serve frontend and Nginx config
-      - ./:/usr/share/nginx/html
-      - ./nginx.conf:/etc/nginx/conf.d/default.conf
     depends_on:
       - backend # Frontend needs backend to be up for API calls
     restart: unless-stopped
