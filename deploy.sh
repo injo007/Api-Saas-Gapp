@@ -1,8 +1,7 @@
 #!/bin/bash
 
-# Speed-Send Deployment Script
-# Comprehensive deployment for Ubuntu 22.04+ 
-# Handles installation, reinstallation, fixes, and frontend build issues
+# Speed-Send Deployment Script for Ubuntu 22.04+
+# Fixes frontend uuid dependency and ensures proper installation
 
 set -e  # Exit on any error
 
@@ -13,7 +12,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-# Logging function
+# Logging functions
 log() {
     echo -e "${GREEN}[$(date '+%Y-%m-%d %H:%M:%S')]${NC} $1"
 }
@@ -168,6 +167,44 @@ install_nodejs() {
     log "Node.js 20 installed successfully"
 }
 
+# Fix package.json to include uuid dependency
+fix_package_json() {
+    log "Fixing package.json dependencies..."
+    
+    # Backup original package.json
+    cp package.json package.json.backup
+    
+    # Update package.json with uuid dependency
+    cat > package.json << 'EOF'
+{
+  "name": "speed-send",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "uuid": "^9.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.2.0",
+    "@types/react-dom": "^18.2.0",
+    "@types/uuid": "^9.0.0",
+    "@vitejs/plugin-react": "^4.0.0",
+    "typescript": "^5.0.0",
+    "vite": "^4.4.0"
+  }
+}
+EOF
+    
+    log "package.json updated with uuid dependency"
+}
+
 # Setup environment file
 setup_environment() {
     log "Setting up environment configuration..."
@@ -224,48 +261,30 @@ cleanup_old_deployment() {
     log "Cleanup completed"
 }
 
-# Fix backend import issues
-fix_backend_imports() {
-    log "Fixing backend import issues..."
+# Create optimized Dockerfile.frontend
+create_frontend_dockerfile() {
+    log "Creating optimized frontend Dockerfile..."
     
-    # Fix accounts.py imports if needed
-    if ! grep -q "import json" backend/api/v1/endpoints/accounts.py; then
-        sed -i '3i import json' backend/api/v1/endpoints/accounts.py
-    fi
-    
-    if ! grep -q "import asyncio" backend/api/v1/endpoints/accounts.py; then
-        sed -i '4i import asyncio' backend/api/v1/endpoints/accounts.py
-    fi
-    
-    # Fix problematic crud.json.loads calls
-    sed -i 's/crud\.json\.loads/json.loads/g' backend/api/v1/endpoints/accounts.py
-    
-    log "Fixed import issues"
-}
-
-# Fix frontend build issues
-fix_frontend_build() {
-    log "Fixing frontend build configuration..."
-    
-    # Create proper frontend Dockerfile if it doesn't exist or is outdated
     cat > Dockerfile.frontend << 'EOF'
-# Frontend Dockerfile
+# Frontend Dockerfile - Optimized for uuid dependency
 FROM node:20-alpine as builder
 
 # Set working directory
 WORKDIR /app
 
 # Install build dependencies
-RUN apk add --no-cache git
+RUN apk add --no-cache git python3 make g++
 
-# Copy package files
+# Copy package files first for better caching
 COPY package.json ./
+
+# Clear npm cache and install dependencies
+RUN npm cache clean --force
+RUN npm install --legacy-peer-deps --no-audit --no-fund
+
+# Copy TypeScript configuration
 COPY tsconfig.json ./
 COPY vite.config.ts ./
-
-# Clean npm cache and install dependencies
-RUN npm cache clean --force
-RUN npm install --legacy-peer-deps --no-audit --no-fund --ignore-scripts
 
 # Copy source code
 COPY . .
@@ -287,12 +306,20 @@ EXPOSE 80
 
 CMD ["nginx", "-g", "daemon off;"]
 EOF
+    
+    log "Frontend Dockerfile created"
+}
 
-    # Create .dockerignore to optimize build
+# Create .dockerignore for optimized builds
+create_dockerignore() {
+    log "Creating .dockerignore..."
+    
     cat > .dockerignore << 'EOF'
 # Node modules
 node_modules/
 npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
 
 # Build outputs
 dist/
@@ -332,290 +359,82 @@ logs/
 # Documentation
 *.md
 LICENSE
+
+# Temporary files
+tmp_*
 EOF
-
-    # Update docker-compose.yml to use build instead of volume mount
-    if grep -q "image: nginx:alpine" docker-compose.yml; then
-        log "Updating docker-compose.yml for proper frontend build..."
-        sed -i '/frontend:/,/restart: unless-stopped/{
-            s/image: nginx:alpine/build:\
-      context: .\
-      dockerfile: Dockerfile.frontend/
-            /volumes:/,/nginx.conf:/d
-        }' docker-compose.yml
-    fi
     
-    log "Frontend build configuration fixed"
-}
-
-# Quick frontend rebuild function
-rebuild_frontend() {
-    log "Rebuilding frontend container..."
-    
-    # Stop frontend container
-    docker-compose stop frontend || true
-    
-    # Remove frontend container and image
-    docker-compose rm -f frontend || true
-    docker rmi $(docker images -q "*frontend*" 2>/dev/null) 2>/dev/null || true
-    
-    # Rebuild frontend
-    docker-compose build --no-cache frontend
-    
-    # Start frontend
-    docker-compose up -d frontend
-    
-    log "Frontend rebuild completed"
-}
-
-# Create production database configuration
-create_production_database_py() {
-    log "Creating production-ready database.py..."
-    
-    cat > backend/database.py << 'EOF'
-from sqlalchemy import create_engine, text
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, Session
-from core.config import settings
-import time
-import logging
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-def create_database_engine():
-    max_retries = 5
-    retry_delay = 5
-    
-    for attempt in range(max_retries):
-        try:
-            engine = create_engine(
-                settings.database_url,
-                pool_pre_ping=True,
-                pool_recycle=300,
-                echo=settings.debug
-            )
-            with engine.connect() as conn:
-                conn.execute(text("SELECT 1"))
-            logger.info("Database connection established")
-            return engine
-        except Exception as e:
-            logger.warning(f"Database connection attempt {attempt + 1} failed: {e}")
-            if attempt < max_retries - 1:
-                time.sleep(retry_delay)
-            else:
-                raise
-
-engine = create_database_engine()
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-Base = declarative_base()
-
-def get_db() -> Session:
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-EOF
-}
-
-# Create production main.py
-create_production_main_py() {
-    log "Creating production-ready main.py..."
-    
-    cat > backend/main.py << 'EOF'
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-import logging
-import sys
-import os
-
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
-try:
-    from api.v1.api import api_router
-    from database import engine
-    from models import Base
-    
-    Base.metadata.create_all(bind=engine)
-    logging.info("Database initialized")
-    
-    app = FastAPI(
-        title="Speed-Send API",
-        description="High-Performance Gmail API Sender",
-        version="1.0.0",
-        docs_url="/docs",
-        redoc_url="/redoc"
-    )
-    
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
-    
-    app.include_router(api_router, prefix="/api/v1")
-    
-    @app.get("/")
-    def read_root():
-        return {"message": "Speed-Send API is running", "status": "healthy"}
-    
-    @app.get("/health")
-    def health_check():
-        return {"status": "healthy", "message": "Speed-Send API is running"}
-
-except Exception as e:
-    logging.error(f"Failed to initialize app: {e}")
-    app = FastAPI(title="Speed-Send API - Error")
-    
-    @app.get("/")
-    def read_root():
-        return {"error": str(e), "status": "failed"}
-    
-    @app.get("/health")
-    def health_check():
-        return {"status": "error", "message": str(e)}
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
-EOF
-}
-
-# Initialize database
-initialize_database() {
-    log "Initializing database with correct schema..."
-    
-    # Wait for database
-    until docker-compose exec -T db pg_isready -U speedsend_user -d speedsend_db 2>/dev/null; do
-        echo "Waiting for database to be ready..."
-        sleep 2
-    done
-    
-    echo "Database connection successful!"
-    echo "Database is ready!"
-    
-    # Initialize schema
-    docker-compose exec -T backend python -c "
-import sys
-sys.path.insert(0, '/app')
-from database import engine
-from models import Base
-import logging
-
-logging.basicConfig(level=logging.INFO)
-try:
-    Base.metadata.create_all(bind=engine)
-    print('Database tables created successfully!')
-except Exception as e:
-    print(f'Error: {e}')
-    sys.exit(1)
-" && echo "Database initialized successfully!" || echo "Database initialization failed"
+    log ".dockerignore created"
 }
 
 # Build and start services
 start_services() {
-    log "Starting database and Redis first..."
+    log "Building and starting services..."
+    
+    # Start database and Redis first
+    log "Starting database and Redis..."
     docker-compose up -d db redis
     
-    # Wait for services
+    # Wait for services to be ready
     log "Waiting for database to be ready..."
-    sleep 10
+    sleep 15
     
-    log "Fixing frontend build configuration..."
-    fix_frontend_build
-    
-    log "Creating production-ready database.py..."
-    create_production_database_py
-    
-    log "Creating production-ready main.py..."
-    create_production_main_py
-    
-    log "Initializing database with correct schema..."
-    initialize_database
-    
-    log "Creating production-ready CRUD operations..."
-    # The CRUD operations are already fixed above
-    
-    log "Creating production-ready schemas..."
-    # The schemas are already correct
-    
-    log "Building and starting all services with proper dependencies..."
-    docker-compose build --no-cache
-    docker-compose up -d
-    
-    log "Waiting for database and Redis to be fully ready..."
-    sleep 45
-    
-    log "Verifying database readiness..."
-    docker-compose exec -T db pg_isready -U speedsend_user -h localhost -p 5432
-    
-    log "Starting backend service..."
+    # Build and start backend
+    log "Building and starting backend..."
     docker-compose up -d backend
     
-    log "Waiting for backend to start..."
-    sleep 30
+    # Wait for backend
+    sleep 20
     
-    # Check if backend needs a minimal API
-    if ! curl -f http://localhost:8000/health >/dev/null 2>&1; then
-        warn "Backend still failing - creating minimal working API"
-        log "Restarting backend with minimal working API..."
-        docker-compose restart backend
-        sleep 15
-        log "✅ Minimal API working - frontend should connect now"
-    fi
-    
-    log "Starting Celery services..."
+    # Build and start workers
+    log "Starting Celery workers..."
     docker-compose up -d celery_worker celery_beat
     
-    log "Starting frontend service..."
+    # Build and start frontend
+    log "Building and starting frontend..."
     docker-compose up -d frontend
     
-    log "Waiting for all services to start properly..."
-    sleep 90
+    # Wait for all services
+    log "Waiting for all services to stabilize..."
+    sleep 30
 }
 
 # Show deployment status
 show_deployment_status() {
-    log "Checking service status..."
+    log "Checking deployment status..."
+    
+    echo "Container Status:"
     docker-compose ps
     
-    log "Running comprehensive diagnostics..."
-    log "Container status:"
-    docker-compose ps --format "table {{.Name}}\t{{.Status}}\t{{.Ports}}"
+    echo -e "\nService Health Checks:"
     
-    log "Backend container logs (last 50 lines):"
-    docker-compose logs --tail=50 backend || true
-    
-    log "Checking if backend process is running inside container:"
-    if docker-compose exec -T backend pgrep -f "uvicorn" >/dev/null 2>&1; then
-        log "✅ Backend process is running"
+    # Check database
+    if docker-compose exec -T db pg_isready -U speedsend_user -d speedsend_db >/dev/null 2>&1; then
+        log "✅ Database is ready"
     else
-        warn "Backend process not found"
+        warn "❌ Database is not ready"
     fi
     
-    log "Testing database connection from backend:"
-    if docker-compose exec -T backend python -c "from database import engine; engine.connect(); print('✅ Database connection successful')" 2>/dev/null; then
-        log "✅ Database connection working"
+    # Check Redis
+    if docker-compose exec -T redis redis-cli ping >/dev/null 2>&1; then
+        log "✅ Redis is ready"
     else
-        warn "Database connection failed"
+        warn "❌ Redis is not ready"
     fi
     
-    log "Testing endpoints..."
-    log "Testing backend health endpoint:"
-    if curl -v http://localhost:8000/health 2>&1 | grep -q "200 OK\|healthy"; then
-        log "✅ Backend health endpoint working"
+    # Check backend
+    sleep 5
+    if curl -f http://localhost:8000/health >/dev/null 2>&1; then
+        log "✅ Backend API is ready"
     else
-        warn "Backend health endpoint failed"
+        warn "❌ Backend API is not ready"
     fi
     
-    log "Testing backend root endpoint:"
-    if curl -v http://localhost:8000/ 2>&1 | grep -q "200 OK\|running"; then
-        log "✅ Backend root endpoint working"
+    # Check frontend
+    if curl -f http://localhost:3000 >/dev/null 2>&1; then
+        log "✅ Frontend is ready"
     else
-        warn "Backend root endpoint failed"
+        warn "❌ Frontend is not ready"
     fi
 }
 
@@ -632,7 +451,7 @@ show_final_summary() {
     log "Health:      http://localhost:8000/health"
     echo
     log "Container Status:"
-    docker-compose ps --format "table {{.Name}}\t{{.Image}}\t{{.Command}}\t{{.Service}}\t{{.CreatedAt}}\t{{.Status}}\t{{.Ports}}"
+    docker-compose ps --format "table {{.Name}}\t{{.Status}}\t{{.Ports}}"
     echo
     warn "⚠️  Configure Gmail API credentials in .env file!"
     echo
@@ -640,130 +459,77 @@ show_final_summary() {
     log "View logs:   docker-compose logs -f"
     log "Restart:     docker-compose restart"
     log "Stop:        docker-compose down"
+    echo
+    log "If you encounter issues, check logs:"
+    log "Frontend logs: docker-compose logs frontend"
+    log "Backend logs:  docker-compose logs backend"
 }
 
-# Main execution
+# Main deployment function
 main() {
-    case "${1:-install}" in
-        "install"|"")
-            log "Starting Speed-Send fresh installation..."
-            check_root
-            check_ubuntu_version
-            install_system_dependencies
-            install_docker
-            install_docker_compose
-            install_nodejs
-            setup_environment
-            cleanup_old_deployment
-            fix_backend_imports
-            start_services
-            show_deployment_status
-            show_final_summary
-            ;;
-        "reinstall"|"--reinstall")
-            log "Reinstalling Speed-Send..."
-            check_root
-            cleanup_old_deployment
-            fix_backend_imports
-            start_services
-            show_deployment_status
-            show_final_summary
-            ;;
-        "fix"|"--fix")
-            log "Fixing Speed-Send issues..."
-            fix_backend_imports
-            create_production_database_py
-            create_production_main_py
-            docker-compose restart
-            show_deployment_status
-            ;;
-        "clean"|"--clean")
-            log "Clean installation (removes all data)..."
-            check_root
-            check_ubuntu_version
-            install_system_dependencies
-            install_docker
-            install_docker_compose
-            install_nodejs
-            # Clean everything
-            docker-compose down --volumes --remove-orphans || true
-            docker system prune -af || true
-            setup_environment
-            fix_backend_imports
-            start_services
-            show_deployment_status
-            show_final_summary
-            ;;
-        "help"|"--help"|"-h")
-            echo "Speed-Send Deployment Script"
-            echo "Usage: ./deploy.sh [command]"
-            echo ""
-            echo "Commands:"
-            echo "  install     - Fresh installation with all dependencies (default)"
-            echo "  reinstall   - Reinstall application (keeps system dependencies)"
-            echo "  clean       - Clean installation (removes all data and containers)"
-            echo "  fix         - Fix common issues"
-            echo "  help        - Show this help"
-            echo ""
-            echo "Requirements:"
-            echo "  - Ubuntu 20.04+ (tested on Ubuntu 22.04)"
-            echo "  - Run as root or user with sudo privileges"
-            echo "  - Internet connection for downloading dependencies"
-            ;;
-        *)
-            error "Unknown command: $1"
-            echo "Use 'help' for available commands"
-            exit 1
-            ;;
-    esac
+    log "Starting Speed-Send deployment..."
+    
+    check_root
+    check_ubuntu_version
+    install_system_dependencies
+    install_docker
+    install_docker_compose
+    install_nodejs
+    
+    # Fix frontend dependencies
+    fix_package_json
+    create_frontend_dockerfile
+    create_dockerignore
+    
+    setup_environment
+    cleanup_old_deployment
+    start_services
+    show_deployment_status
+    show_final_summary
 }
 
-# Execute main function
-# Print usage information
-usage() {
-    echo "Usage: $0 [COMMAND]"
-    echo ""
-    echo "Commands:"
-    echo "  install       Full installation (default)"
-    echo "  reinstall     Clean reinstallation"
-    echo "  fix-frontend  Quick frontend rebuild only"
-    echo ""
-    echo "Examples:"
-    echo "  $0                    # Full deployment"
-    echo "  $0 install           # Full deployment"
-    echo "  $0 reinstall         # Clean reinstallation"
-    echo "  $0 fix-frontend      # Fix blank frontend issue"
-    echo ""
-}
-
-# Main execution with command line options
-case "${1:-}" in
-    "fix-frontend")
-        log "Quick frontend fix mode..."
-        rebuild_frontend
-        log "Frontend fix completed! Access at http://localhost:3000"
-        exit 0
-        ;;
-    "install")
-        log "Full installation mode..."
+# Handle command line arguments
+case "${1:-install}" in
+    "install"|"")
         main
         ;;
+    "fix-frontend")
+        log "Fixing frontend build issues..."
+        fix_package_json
+        create_frontend_dockerfile
+        create_dockerignore
+        docker-compose stop frontend
+        docker-compose rm -f frontend
+        docker rmi $(docker images -q "*frontend*" 2>/dev/null) || true
+        docker-compose build --no-cache frontend
+        docker-compose up -d frontend
+        log "Frontend fix completed!"
+        ;;
     "reinstall")
-        log "Reinstallation mode..."
+        log "Reinstalling Speed-Send..."
         cleanup_old_deployment
         main
         ;;
-    "-h"|"--help"|"help")
-        usage
-        exit 0
-        ;;
-    "")
-        log "Starting default Speed-Send deployment..."
+    "clean")
+        log "Clean installation..."
+        docker-compose down --volumes --remove-orphans || true
+        docker system prune -af || true
         main
+        ;;
+    "help"|"--help"|"-h")
+        echo "Speed-Send Deployment Script"
+        echo "Usage: ./deploy.sh [command]"
+        echo ""
+        echo "Commands:"
+        echo "  install       - Fresh installation (default)"
+        echo "  fix-frontend  - Fix frontend uuid dependency issue"
+        echo "  reinstall     - Reinstall application"
+        echo "  clean         - Clean installation (removes all data)"
+        echo "  help          - Show this help"
         ;;
     *)
         error "Unknown command: $1"
-        usage
+        echo "Use './deploy.sh help' for available commands"
         exit 1
         ;;
 esac
