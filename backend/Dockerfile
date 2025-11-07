@@ -30,7 +30,7 @@ RUN poetry config virtualenvs.create false \
     && poetry install --only=main --no-interaction --no-ansi
 
 # Copy application code
-COPY backend/ /app/
+COPY . /app/
 
 # Create uploads directory
 RUN mkdir -p /app/uploads
