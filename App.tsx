@@ -8,12 +8,15 @@ import AccountsView from './components/views/AccountsView';
 import CreateCampaignView from './components/views/CreateCampaignView';
 import CampaignDetailView from './components/views/CampaignDetailView';
 import UltraFastSendView from './components/views/UltraFastSendView';
+import DataManagementView from './components/views/DataManagementView';
+import AnalyticsView from './components/views/AnalyticsView';
+import TestCenterView from './components/views/TestCenterView';
 import Layout from './components/layout/Layout'; // New Layout component
 import { Account, Campaign, CampaignCreatePayload, CampaignStatus } from './types';
 import { createApiWithToast } from './services/api'; // Use the new factory
 import { useToast } from './contexts/ToastContext';
 
-export type View = 'DASHBOARD' | 'ACCOUNTS' | 'CREATE_CAMPAIGN' | 'CAMPAIGN_DETAIL' | 'ULTRA_FAST_SEND';
+export type View = 'DASHBOARD' | 'ACCOUNTS' | 'CREATE_CAMPAIGN' | 'CAMPAIGN_DETAIL' | 'ULTRA_FAST_SEND' | 'DATA_MANAGEMENT' | 'ANALYTICS' | 'TEST_CENTER';
 
 const App: React.FC = () => {
   const [view, setView] = useState<View>('DASHBOARD');
@@ -228,6 +231,12 @@ const App: React.FC = () => {
         return <CampaignDetailView campaignId={selectedCampaignId} onBack={() => setView('DASHBOARD')} />;
       case 'ULTRA_FAST_SEND':
         return <UltraFastSendView />;
+      case 'DATA_MANAGEMENT':
+        return <DataManagementView />;
+      case 'ANALYTICS':
+        return <AnalyticsView />;
+      case 'TEST_CENTER':
+        return <TestCenterView />;
       default:
         // Default to Dashboard if view is somehow unset
         return <DashboardView 

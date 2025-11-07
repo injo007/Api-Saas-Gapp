@@ -16,6 +16,9 @@ const Sidebar: React.FC<SidebarProps> = ({ currentView, setView }) => {
     { view: 'DASHBOARD' as View, label: 'Dashboard', icon: ChartBarIcon },
     { view: 'ULTRA_FAST_SEND' as View, label: 'Ultra-Fast Send', icon: PaperAirplaneIcon },
     { view: 'ACCOUNTS' as View, label: 'Accounts', icon: UsersIcon },
+    { view: 'DATA_MANAGEMENT' as View, label: 'Data Management', icon: ChartBarIcon },
+    { view: 'ANALYTICS' as View, label: 'Analytics & Reports', icon: ChartBarIcon },
+    { view: 'TEST_CENTER' as View, label: 'Test Center', icon: PaperAirplaneIcon },
   ];
 
   const baseClasses = 'flex items-center px-4 py-3 rounded-lg text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors duration-200';

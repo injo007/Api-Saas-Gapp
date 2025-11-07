@@ -172,6 +172,52 @@ export const createApiWithToast = (addToast: (options: { message: string; type: 
     getCampaignAssignments: (campaignId: number): Promise<any> => {
         return fetch(`${API_BASE_URL}/campaigns/${campaignId}/assignments`).then(res => handleResponse<any>(res, addToast));
     },
+
+    // Additional API endpoints for new features
+    deleteCampaign: (campaignId: number): Promise<void> => {
+      return fetch(`${API_BASE_URL}/campaigns/${campaignId}`, {
+        method: 'DELETE',
+      }).then(res => handleResponse<void>(res, addToast));
+    },
+
+    bulkDelete: (type: 'campaigns' | 'recipients'): Promise<void> => {
+      return fetch(`${API_BASE_URL}/bulk-delete/${type}`, {
+        method: 'DELETE',
+      }).then(res => handleResponse<void>(res, addToast));
+    },
+
+    getAnalytics: (timeRange?: string): Promise<any> => {
+      const params = timeRange ? `?range=${timeRange}` : '';
+      return fetch(`${API_BASE_URL}/analytics${params}`).then(res => handleResponse<any>(res, addToast));
+    },
+
+    exportAnalytics: (format: 'json' | 'csv' = 'json'): Promise<Blob> => {
+      return fetch(`${API_BASE_URL}/analytics/export?format=${format}`)
+        .then(res => {
+          if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
+          return res.blob();
+        });
+    },
+
+    getSystemStats: (): Promise<any> => {
+      return fetch(`${API_BASE_URL}/system/stats`).then(res => handleResponse<any>(res, addToast));
+    },
+
+    validateTemplate: (template: string, testData: any): Promise<{ valid: boolean; rendered?: string; error?: string }> => {
+      return fetch(`${API_BASE_URL}/templates/validate`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ template, test_data: testData }),
+      }).then(res => handleResponse<any>(res, addToast));
+    },
+
+    testConnection: (accountId: number): Promise<{ success: boolean; message: string; details?: any }> => {
+      return fetch(`${API_BASE_URL}/accounts/${accountId}/test-connection`, {
+        method: 'POST',
+      }).then(res => handleResponse<any>(res, addToast));
+    },
   };
 };
 
