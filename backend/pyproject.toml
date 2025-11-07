@@ -1,0 +1,35 @@
+[tool.poetry]
+name = "speed-send-backend"
+version = "0.1.0"
+description = "High-Performance Gmail API Sender Backend"
+authors = ["Speed-Send <support@speedsend.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.11"
+fastapi = "^0.104.0"
+uvicorn = {extras = ["standard"], version = "^0.24.0"}
+pydantic = "^2.4.0"
+sqlalchemy = "^2.0.0"
+alembic = "^1.12.0"
+psycopg2-binary = "^2.9.0"
+celery = "^5.3.0"
+redis = "^5.0.0"
+redbeat = "^2.0.0"
+cryptography = "^41.0.0"
+google-api-python-client = "^2.100.0"
+google-auth = "^2.23.0"
+python-multipart = "^0.0.6"
+python-dotenv = "^1.0.0"
+passlib = {extras = ["bcrypt"], version = "^1.7.4"}
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.4.0"
+pytest-asyncio = "^0.21.0"
+black = "^23.0.0"
+isort = "^5.12.0"
+flake8 = "^6.0.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

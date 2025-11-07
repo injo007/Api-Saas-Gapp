@@ -1,0 +1,5 @@
+{
+  "name": "Speed-Send",
+  "description": "A high-performance Google Workspace email sender for scalable, fast, and modern email campaigns. Manage accounts, create campaigns, and send messages at massive scale via the Gmail API.",
+  "requestFramePermissions": []
+}
