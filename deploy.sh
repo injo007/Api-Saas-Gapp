@@ -267,7 +267,7 @@ create_frontend_dockerfile() {
     
     cat > Dockerfile.frontend << 'EOF'
 # Frontend Dockerfile - Optimized for uuid dependency
-FROM node:20-alpine as builder
+FROM node:20-alpine AS builder
 
 # Set working directory
 WORKDIR /app
