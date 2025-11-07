@@ -1002,8 +1002,44 @@ class HealthCheck(BaseModel):
     version: Optional[str] = "1.0.0"
 SCHEMASEOF
 
-    log "Starting all services..."
-    docker-compose up -d
+    # Fix Docker networking and container startup order
+    log "Starting all services with proper dependencies..."
+    
+    # Start database and Redis first and wait
+    docker-compose up -d db redis
+    log "Waiting for database and Redis to be fully ready..."
+    sleep 45
+    
+    # Verify database is accepting connections
+    log "Verifying database readiness..."
+    docker exec speedsend_db pg_isready -U speedsend -d speedsend || echo "Database not ready yet, waiting more..."
+    sleep 15
+    
+    # Start backend only after database is ready
+    log "Starting backend service..."
+    docker-compose up -d backend
+    
+    # Wait for backend to start and check logs immediately
+    log "Waiting for backend to start..."
+    sleep 30
+    
+    # Check backend startup logs
+    log "Checking backend startup logs:"
+    docker logs speedsend_backend --tail 20
+    
+    # Check if backend is listening on port 8000
+    log "Checking if backend is listening on port 8000:"
+    docker exec speedsend_backend netstat -tlnp | grep 8000 || echo "Backend not listening on port 8000"
+    
+    # Start Celery services
+    log "Starting Celery services..."
+    docker-compose up -d celery_worker celery_beat
+    sleep 15
+    
+    # Finally start frontend
+    log "Starting frontend service..."
+    docker-compose up -d frontend
+    sleep 15
     
     # Wait longer for all services to properly start
     log "Waiting for all services to start properly..."
@@ -1012,24 +1048,53 @@ SCHEMASEOF
     log "Checking service status..."
     docker-compose ps
     
-    # Test endpoints
+    # Comprehensive diagnostics
+    log "Running comprehensive diagnostics..."
+    
+    # Check container status
+    log "Container status:"
+    docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" | grep speedsend || echo "No speedsend containers found"
+    
+    # Check backend logs for errors
+    log "Backend container logs (last 50 lines):"
+    docker logs speedsend_backend --tail 50 2>&1 || echo "Cannot get backend logs"
+    
+    # Check if backend is running
+    log "Checking if backend process is running inside container:"
+    docker exec speedsend_backend ps aux | grep python || echo "Backend process not found"
+    
+    # Check network connectivity
+    log "Checking network connectivity:"
+    docker exec speedsend_frontend ping -c 2 speedsend_backend || echo "Network connectivity failed"
+    
+    # Test database connection from backend
+    log "Testing database connection from backend:"
+    docker exec speedsend_backend python -c "
+import sys
+sys.path.append('/app')
+try:
+    from database import engine
+    connection = engine.connect()
+    print('✅ Database connection successful')
+    connection.close()
+except Exception as e:
+    print(f'❌ Database connection failed: {e}')
+" || echo "Could not test database connection"
+    
+    # Test specific endpoints
     log "Testing endpoints..."
     
-    # Test backend
-    if curl -s --connect-timeout 10 http://localhost:8000/health > /dev/null; then
-        log "✅ Backend health check passed"
-    else
-        warn "❌ Backend health check failed"
-        docker logs speedsend_backend | tail -10
-    fi
+    # Test backend health
+    log "Testing backend health endpoint:"
+    curl -v http://localhost:8000/health 2>&1 || echo "Backend health endpoint failed"
     
-    # Test frontend
-    if curl -s --connect-timeout 10 http://localhost:3000 > /dev/null; then
-        log "✅ Frontend is accessible"
-    else
-        warn "❌ Frontend not accessible"
-        docker logs speedsend_frontend | tail -10
-    fi
+    # Test backend root
+    log "Testing backend root endpoint:"
+    curl -v http://localhost:8000/ 2>&1 || echo "Backend root endpoint failed"
+    
+    # Show backend process details
+    log "Backend process details:"
+    docker exec speedsend_backend netstat -tlnp 2>/dev/null || echo "Cannot get network details"
 }
 
 # Show final status
