@@ -494,16 +494,24 @@ case "${1:-install}" in
         main
         ;;
     "fix-frontend")
-        log "Fixing frontend build issues..."
+        log "Fixing frontend build and API routing issues..."
         fix_package_json
         create_frontend_dockerfile
         create_dockerignore
-        docker-compose stop frontend
-        docker-compose rm -f frontend
+        
+        # Stop and remove frontend container
+        docker compose stop frontend || docker-compose stop frontend || true
+        docker compose rm -f frontend || docker-compose rm -f frontend || true
+        
+        # Remove old frontend images
         docker rmi $(docker images -q "*frontend*" 2>/dev/null) || true
-        docker-compose build --no-cache frontend
-        docker-compose up -d frontend
-        log "Frontend fix completed!"
+        docker rmi $(docker images -q speedsend_frontend 2>/dev/null) || true
+        
+        # Rebuild and start frontend with proper API routing
+        docker compose build --no-cache frontend || docker-compose build --no-cache frontend
+        docker compose up -d frontend || docker-compose up -d frontend
+        
+        log "Frontend fix completed! API routing should now work."
         ;;
     "reinstall")
         log "Reinstalling Speed-Send..."
