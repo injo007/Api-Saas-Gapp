@@ -3,9 +3,10 @@ from api.v1.endpoints import health, accounts, campaigns, analytics, data_manage
 
 api_router = APIRouter()
 
-api_router.include_router(health.router, tags=["health"])
-api_router.include_router(accounts.router, prefix="/accounts", tags=["accounts"])
+# Include all routers with proper prefixes
+api_router.include_router(health.router, prefix="/health", tags=["health"])
+api_router.include_router(accounts.router, prefix="/accounts", tags=["accounts"]) 
 api_router.include_router(campaigns.router, prefix="/campaigns", tags=["campaigns"])
-api_router.include_router(analytics.router, tags=["analytics"])
-api_router.include_router(data_management.router, tags=["data_management"])
-api_router.include_router(testing.router, tags=["testing"])
+api_router.include_router(analytics.router, prefix="", tags=["analytics"])  # Analytics routes have their own paths
+api_router.include_router(data_management.router, prefix="", tags=["data_management"])  # Data mgmt routes have their own paths
+api_router.include_router(testing.router, prefix="", tags=["testing"])  # Testing routes have their own paths
