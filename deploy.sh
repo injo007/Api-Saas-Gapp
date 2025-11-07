@@ -240,7 +240,7 @@ create_production_database_py() {
     log "Creating production-ready database.py..."
     
     cat > backend/database.py << 'EOF'
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
 from core.config import settings
@@ -263,7 +263,7 @@ def create_database_engine():
                 echo=settings.debug
             )
             with engine.connect() as conn:
-                conn.execute("SELECT 1")
+                conn.execute(text("SELECT 1"))
             logger.info("Database connection established")
             return engine
         except Exception as e:
