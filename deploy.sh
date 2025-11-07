@@ -1,8 +1,8 @@
 #!/bin/bash
 
 # Speed-Send Deployment Script
-# Comprehensive deployment for Ubuntu 22.04+ with Windows development support
-# Handles installation, reinstallation, and fixes
+# Comprehensive deployment for Ubuntu 22.04+ 
+# Handles installation, reinstallation, fixes, and frontend build issues
 
 set -e  # Exit on any error
 
@@ -141,23 +141,31 @@ install_docker_compose() {
 
 # Install Node.js
 install_nodejs() {
-    log "Installing Node.js..."
+    log "Installing Node.js 20 LTS..."
     
     if command -v node &> /dev/null; then
         NODE_VERSION=$(node --version)
-        log "Node.js $NODE_VERSION is already installed"
-        return 0
+        MAJOR_VERSION=$(echo $NODE_VERSION | cut -d'.' -f1 | sed 's/v//')
+        if [ "$MAJOR_VERSION" -ge "20" ]; then
+            log "Node.js $NODE_VERSION is already installed and compatible"
+            return 0
+        else
+            log "Node.js $NODE_VERSION is too old, upgrading to Node.js 20..."
+        fi
     fi
     
-    # Install Node.js 18 LTS
-    curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
+    # Remove old Node.js versions
+    apt remove -y nodejs npm || true
+    
+    # Install Node.js 20 LTS
+    curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
     apt install -y nodejs
     
     # Verify installation
     node --version
     npm --version
     
-    log "Node.js installed successfully"
+    log "Node.js 20 installed successfully"
 }
 
 # Setup environment file
@@ -233,6 +241,127 @@ fix_backend_imports() {
     sed -i 's/crud\.json\.loads/json.loads/g' backend/api/v1/endpoints/accounts.py
     
     log "Fixed import issues"
+}
+
+# Fix frontend build issues
+fix_frontend_build() {
+    log "Fixing frontend build configuration..."
+    
+    # Create proper frontend Dockerfile if it doesn't exist or is outdated
+    cat > Dockerfile.frontend << 'EOF'
+# Frontend Dockerfile
+FROM node:20-alpine as builder
+
+# Set working directory
+WORKDIR /app
+
+# Copy package files
+COPY package.json ./
+COPY tsconfig.json ./
+COPY vite.config.ts ./
+
+# Install dependencies with legacy peer deps to avoid conflicts
+RUN npm install --legacy-peer-deps
+
+# Copy source code
+COPY . .
+
+# Build the application
+RUN npm run build
+
+# Production stage
+FROM nginx:alpine
+
+# Copy built files
+COPY --from=builder /app/dist /usr/share/nginx/html
+
+# Copy nginx configuration
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+
+# Expose port 80
+EXPOSE 80
+
+CMD ["nginx", "-g", "daemon off;"]
+EOF
+
+    # Create .dockerignore to optimize build
+    cat > .dockerignore << 'EOF'
+# Node modules
+node_modules/
+npm-debug.log*
+
+# Build outputs
+dist/
+build/
+
+# Environment files
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Git
+.git/
+.gitignore
+
+# Docker files
+Dockerfile*
+docker-compose*
+
+# Backend files (not needed for frontend build)
+backend/
+uploads/
+data/
+logs/
+
+# Documentation
+*.md
+LICENSE
+EOF
+
+    # Update docker-compose.yml to use build instead of volume mount
+    if grep -q "image: nginx:alpine" docker-compose.yml; then
+        log "Updating docker-compose.yml for proper frontend build..."
+        sed -i '/frontend:/,/restart: unless-stopped/{
+            s/image: nginx:alpine/build:\
+      context: .\
+      dockerfile: Dockerfile.frontend/
+            /volumes:/,/nginx.conf:/d
+        }' docker-compose.yml
+    fi
+    
+    log "Frontend build configuration fixed"
+}
+
+# Quick frontend rebuild function
+rebuild_frontend() {
+    log "Rebuilding frontend container..."
+    
+    # Stop frontend container
+    docker-compose stop frontend || true
+    
+    # Remove frontend container and image
+    docker-compose rm -f frontend || true
+    docker rmi $(docker images -q "*frontend*" 2>/dev/null) 2>/dev/null || true
+    
+    # Rebuild frontend
+    docker-compose build --no-cache frontend
+    
+    # Start frontend
+    docker-compose up -d frontend
+    
+    log "Frontend rebuild completed"
 }
 
 # Create production database configuration
@@ -390,6 +519,9 @@ start_services() {
     # Wait for services
     log "Waiting for database to be ready..."
     sleep 10
+    
+    log "Fixing frontend build configuration..."
+    fix_frontend_build
     
     log "Creating production-ready database.py..."
     create_production_database_py
@@ -583,4 +715,51 @@ main() {
 }
 
 # Execute main function
-main "$@"
+# Print usage information
+usage() {
+    echo "Usage: $0 [COMMAND]"
+    echo ""
+    echo "Commands:"
+    echo "  install       Full installation (default)"
+    echo "  reinstall     Clean reinstallation"
+    echo "  fix-frontend  Quick frontend rebuild only"
+    echo ""
+    echo "Examples:"
+    echo "  $0                    # Full deployment"
+    echo "  $0 install           # Full deployment"
+    echo "  $0 reinstall         # Clean reinstallation"
+    echo "  $0 fix-frontend      # Fix blank frontend issue"
+    echo ""
+}
+
+# Main execution with command line options
+case "${1:-}" in
+    "fix-frontend")
+        log "Quick frontend fix mode..."
+        rebuild_frontend
+        log "Frontend fix completed! Access at http://localhost:3000"
+        exit 0
+        ;;
+    "install")
+        log "Full installation mode..."
+        main
+        ;;
+    "reinstall")
+        log "Reinstallation mode..."
+        cleanup_old_deployment
+        main
+        ;;
+    "-h"|"--help"|"help")
+        usage
+        exit 0
+        ;;
+    "")
+        log "Starting default Speed-Send deployment..."
+        main
+        ;;
+    *)
+        error "Unknown command: $1"
+        usage
+        exit 1
+        ;;
+esac
