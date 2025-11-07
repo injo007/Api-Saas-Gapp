@@ -21,8 +21,8 @@ RUN apt-get update && apt-get install -y \
 # Install Poetry with specific version
 RUN pip install --no-cache-dir poetry==1.6.1
 
-# Copy poetry files from project root
-COPY ./backend/pyproject.toml ./backend/poetry.lock* ./
+# Copy poetry files (files are in same directory as Dockerfile)
+COPY pyproject.toml poetry.lock* ./
 
 # Configure poetry: don't create virtual env, install dependencies
 RUN poetry config virtualenvs.create false \
