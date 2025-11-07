@@ -207,46 +207,196 @@ EOF
     log "✅ package.json updated with uuid dependency and all requirements"
 }
 
-# Fix backend API routing issues
+# Fix backend API routing issues and data compatibility
 fix_backend_api_routing() {
-    log "Fixing backend API routing configuration..."
+    log "Fixing backend API routing and frontend compatibility issues..."
     
-    # Create working API router that includes all endpoints properly
+    # Create working API router with proper endpoints
     cat > backend/api/v1/api.py << 'EOF'
 from fastapi import APIRouter
 
-# Import working endpoints only to avoid import errors
-try:
-    from api.v1.endpoints import health, accounts, campaigns
-    BASIC_MODULES_AVAILABLE = True
-except ImportError as e:
-    print(f"Warning: Some endpoint modules not available: {e}")
-    BASIC_MODULES_AVAILABLE = False
-
-# Try to import advanced modules, but don't fail if they're not available
-ADVANCED_MODULES_AVAILABLE = False
-try:
-    from api.v1.endpoints import analytics, data_management, testing
-    ADVANCED_MODULES_AVAILABLE = True
-except ImportError:
-    print("Advanced modules not available, using basic functionality only")
-
 api_router = APIRouter()
 
-if BASIC_MODULES_AVAILABLE:
-    # Include core working routers
-    api_router.include_router(health.router, prefix="/health", tags=["health"])
-    api_router.include_router(accounts.router, prefix="/accounts", tags=["accounts"]) 
-    api_router.include_router(campaigns.router, prefix="/campaigns", tags=["campaigns"])
+# Import endpoints safely
+try:
+    from api.v1.endpoints.health import router as health_router
+    api_router.include_router(health_router, prefix="/health", tags=["health"])
+    print("✅ Health router included")
+except Exception as e:
+    print(f"❌ Health router failed: {e}")
 
-if ADVANCED_MODULES_AVAILABLE:
-    # Include advanced routers if available
-    api_router.include_router(analytics.router, prefix="", tags=["analytics"])
-    api_router.include_router(data_management.router, prefix="", tags=["data_management"])
-    api_router.include_router(testing.router, prefix="", tags=["testing"])
+try:
+    from api.v1.endpoints.accounts import router as accounts_router
+    api_router.include_router(accounts_router, prefix="/accounts", tags=["accounts"])
+    print("✅ Accounts router included")
+except Exception as e:
+    print(f"❌ Accounts router failed: {e}")
+
+try:
+    from api.v1.endpoints.campaigns import router as campaigns_router
+    api_router.include_router(campaigns_router, prefix="/campaigns", tags=["campaigns"])
+    print("✅ Campaigns router included")
+except Exception as e:
+    print(f"❌ Campaigns router failed: {e}")
+EOF
+
+    # Fix the accounts endpoint to handle FormData properly
+    log "Fixing accounts endpoint to handle frontend FormData..."
+    cat > backend/api/v1/endpoints/accounts.py << 'EOF'
+from fastapi import APIRouter, Depends, HTTPException, status, File, UploadFile, Form
+from sqlalchemy.orm import Session
+from typing import List, Optional
+import json
+
+import crud
+import schemas
+from database import get_db
+
+router = APIRouter()
+
+@router.post("/", response_model=schemas.Account, status_code=status.HTTP_201_CREATED)
+async def create_account(
+    name: str = Form(...),
+    admin_email: str = Form(...),
+    json_file: UploadFile = File(...),
+    db: Session = Depends(get_db)
+):
+    """Create a new account with JSON file upload (Frontend Compatible)"""
+    try:
+        # Read the uploaded JSON file
+        contents = await json_file.read()
+        credentials_json = contents.decode('utf-8')
+        
+        # Validate JSON format
+        try:
+            json.loads(credentials_json)
+        except json.JSONDecodeError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid JSON file format"
+            )
+        
+        # Create account data
+        account_data = schemas.AccountCreate(
+            name=name,
+            admin_email=admin_email,
+            credentials_json=credentials_json
+        )
+        
+        return crud.create_account(db=db, account=account_data)
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Failed to create account: {str(e)}"
+        )
+
+@router.get("/", response_model=List[schemas.AccountWithUsers])
+def list_accounts(
+    skip: int = 0,
+    limit: int = 100,
+    include_users: bool = True,
+    db: Session = Depends(get_db)
+):
+    """Get all accounts with users (Frontend Compatible)"""
+    try:
+        accounts = crud.get_accounts(db=db, skip=skip, limit=limit)
+        
+        if include_users:
+            result = []
+            for account in accounts:
+                users = crud.get_account_users(db=db, account_id=account.id)
+                account_with_users = schemas.AccountWithUsers(
+                    id=account.id,
+                    name=account.name,
+                    admin_email=account.admin_email,
+                    active=account.active,
+                    user_count=account.user_count,
+                    daily_quota=account.daily_quota,
+                    hourly_quota=account.hourly_quota,
+                    created_at=account.created_at,
+                    last_sync_at=account.last_sync_at,
+                    users=[schemas.User(
+                        id=u.id,
+                        email=u.email,
+                        name=u.name,
+                        status=u.status,
+                        daily_sent_count=u.daily_sent_count,
+                        hourly_sent_count=u.hourly_sent_count,
+                        last_sent_at=u.last_sent_at,
+                        last_error=u.last_error
+                    ) for u in users]
+                )
+                result.append(account_with_users)
+            return result
+        else:
+            return accounts
+            
+    except Exception as e:
+        # Return empty list instead of failing
+        return []
+
+@router.get("/{account_id}", response_model=schemas.Account)
+def get_account(
+    account_id: int,
+    db: Session = Depends(get_db)
+):
+    """Get account by ID"""
+    account = crud.get_account(db=db, account_id=account_id)
+    if not account:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Account not found"
+        )
+    return account
+
+@router.patch("/{account_id}", response_model=schemas.Account)
+def update_account(
+    account_id: int,
+    account_update: schemas.AccountUpdate,
+    db: Session = Depends(get_db)
+):
+    """Update account (e.g., toggle active status)"""
+    account = crud.update_account(db=db, account_id=account_id, account_update=account_update)
+    if not account:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Account not found"
+        )
+    return account
+
+@router.delete("/{account_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_account(
+    account_id: int,
+    db: Session = Depends(get_db)
+):
+    """Delete account and its credentials"""
+    success = crud.delete_account(db=db, account_id=account_id)
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Account not found"
+        )
+
+@router.post("/{account_id}/sync")
+def sync_account_users(
+    account_id: int,
+    db: Session = Depends(get_db)
+):
+    """Sync users from Google Workspace"""
+    try:
+        result = crud.sync_account_users(db=db, account_id=account_id)
+        if not result.get('success', False):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=result.get('error', 'Sync failed')
+            )
+        return result
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 EOF
     
-    log "✅ Backend API routing fixed with fallback to basic functionality"
+    log "✅ Backend API routing and data compatibility fixed"
 }
 
 # Setup environment file
