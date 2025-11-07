@@ -187,11 +187,9 @@ EOF
 }
 EOF
 
-    # Fix docker-compose.yml
+    # Fix docker-compose.yml (remove obsolete version attribute)
     log "Creating fixed docker-compose.yml..."
     cat > docker-compose.yml << 'EOF'
-version: '3.8'
-
 services:
   db:
     image: postgres:15-alpine
