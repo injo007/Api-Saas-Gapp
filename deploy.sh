@@ -125,6 +125,80 @@ def root():
     return {"message": "Speed-Send API", "status": "healthy"}
 EOF
 
+    # Fix database models - Add missing foreign key relationships
+    log "Fixing database models..."
+    cat > backend/models.py << 'MODELSEOF'
+from sqlalchemy import Column, Integer, String, Text, DateTime, Boolean, ForeignKey, Float
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import relationship
+from sqlalchemy.sql import func
+
+Base = declarative_base()
+
+class User(Base):
+    __tablename__ = "users"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    email = Column(String, unique=True, index=True, nullable=False)
+    hashed_password = Column(String, nullable=False)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    # Relationships
+    accounts = relationship("Account", back_populates="user")
+    campaigns = relationship("Campaign", back_populates="user")
+
+class Account(Base):
+    __tablename__ = "accounts"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    email = Column(String, nullable=False, index=True)
+    name = Column(String, nullable=False)
+    encrypted_credentials = Column(Text, nullable=False)
+    is_active = Column(Boolean, default=True)
+    daily_limit = Column(Integer, default=500)
+    hourly_limit = Column(Integer, default=50)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    
+    # Relationships
+    user = relationship("User", back_populates="accounts")
+    campaigns = relationship("Campaign", back_populates="account")
+
+class Campaign(Base):
+    __tablename__ = "campaigns"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False, index=True)
+    subject = Column(String, nullable=False)
+    content = Column(Text, nullable=False)
+    status = Column(String, default="draft")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    account_id = Column(Integer, ForeignKey("accounts.id"), nullable=True)
+    
+    # Relationships
+    user = relationship("User", back_populates="campaigns")
+    account = relationship("Account", back_populates="campaigns")
+    emails = relationship("Email", back_populates="campaign")
+
+class Email(Base):
+    __tablename__ = "emails"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    recipient_email = Column(String, nullable=False, index=True)
+    recipient_name = Column(String)
+    status = Column(String, default="pending")
+    sent_at = Column(DateTime(timezone=True))
+    error_message = Column(Text)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    campaign_id = Column(Integer, ForeignKey("campaigns.id"), nullable=False)
+    
+    # Relationships
+    campaign = relationship("Campaign", back_populates="emails")
+MODELSEOF
+
     # Update main.py to include health route at root
     log "Updating main.py..."
     if ! grep -q "app.get.*health" backend/main.py; then
@@ -503,7 +577,30 @@ deploy_application() {
     log "Building containers..."
     docker-compose build --no-cache
     
-    log "Starting services..."
+    log "Starting database and Redis first..."
+    docker-compose up -d db redis
+    
+    # Wait for database
+    log "Waiting for database to be ready..."
+    sleep 30
+    
+    # Initialize database with new schema
+    log "Initializing database with correct schema..."
+    docker-compose run --rm backend python -c "
+from database import engine
+from models import Base
+import time
+
+# Wait a bit more for DB to be ready
+time.sleep(10)
+
+# Drop and recreate all tables with correct schema
+Base.metadata.drop_all(bind=engine)
+Base.metadata.create_all(bind=engine)
+print('Database initialized successfully!')
+"
+    
+    log "Starting all services..."
     docker-compose up -d
     
     # Wait and check
