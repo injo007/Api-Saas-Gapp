@@ -584,28 +584,430 @@ deploy_application() {
     log "Waiting for database to be ready..."
     sleep 30
     
+    # Fix database.py to ensure proper connection
+    log "Creating production-ready database.py..."
+    cat > backend/database.py << 'DBEOF'
+from sqlalchemy import create_engine
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker
+import os
+import time
+
+# Database URL from environment
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://speedsend:speedsend123@db:5432/speedsend")
+
+# Create engine with connection pooling and retry logic
+engine = create_engine(
+    DATABASE_URL,
+    pool_pre_ping=True,
+    pool_recycle=300,
+    pool_size=10,
+    max_overflow=20,
+    echo=False
+)
+
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+Base = declarative_base()
+
+# Dependency for getting database session
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+# Function to wait for database to be ready
+def wait_for_db():
+    max_retries = 30
+    retry_count = 0
+    
+    while retry_count < max_retries:
+        try:
+            # Try to connect to database
+            connection = engine.connect()
+            connection.close()
+            print("Database connection successful!")
+            return True
+        except Exception as e:
+            print(f"Database connection attempt {retry_count + 1}/{max_retries} failed: {e}")
+            time.sleep(2)
+            retry_count += 1
+    
+    raise Exception("Could not connect to database after maximum retries")
+
+# Initialize database tables
+def init_db():
+    from models import Base
+    wait_for_db()
+    Base.metadata.create_all(bind=engine)
+    print("Database tables created successfully!")
+DBEOF
+
+    # Create a proper main.py that initializes everything correctly
+    log "Creating production-ready main.py..."
+    cat > backend/main.py << 'MAINEOF'
+from fastapi import FastAPI, Depends
+from fastapi.middleware.cors import CORSMiddleware
+from api.v1.api import api_router
+from database import init_db
+import uvicorn
+
+# Initialize database on startup
+try:
+    init_db()
+    print("Database initialized successfully!")
+except Exception as e:
+    print(f"Database initialization failed: {e}")
+
+app = FastAPI(
+    title="Speed-Send API",
+    description="High-performance email campaign platform",
+    version="1.0.0"
+)
+
+# Configure CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # In production, replace with specific origins
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Include API routes
+app.include_router(api_router, prefix="/api/v1")
+
+# Root health endpoint
+@app.get("/")
+def read_root():
+    return {"message": "Speed-Send API", "status": "healthy", "version": "1.0.0"}
+
+@app.get("/health")
+def health_check():
+    return {"status": "healthy", "message": "Speed-Send API is running"}
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=8000)
+MAINEOF
+
     # Initialize database with new schema
     log "Initializing database with correct schema..."
     docker-compose run --rm backend python -c "
-from database import engine
+import sys
+sys.path.append('/app')
+from database import wait_for_db, init_db
 from models import Base
-import time
 
-# Wait a bit more for DB to be ready
-time.sleep(10)
-
-# Drop and recreate all tables with correct schema
-Base.metadata.drop_all(bind=engine)
-Base.metadata.create_all(bind=engine)
-print('Database initialized successfully!')
+try:
+    print('Waiting for database to be ready...')
+    wait_for_db()
+    print('Database is ready!')
+    
+    print('Initializing database schema...')
+    init_db()
+    print('Database initialized successfully!')
+    
+except Exception as e:
+    print(f'Database initialization failed: {e}')
+    exit(1)
 "
     
+    # Create production-ready CRUD operations
+    log "Creating production-ready CRUD operations..."
+    cat > backend/crud.py << 'CRUDEOF'
+from sqlalchemy.orm import Session
+from sqlalchemy import func
+from models import User, Account, Campaign, Email
+from schemas import UserCreate, AccountCreate, CampaignCreate
+from passlib.context import CryptContext
+import uuid
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+# User CRUD operations
+def get_user(db: Session, user_id: int):
+    return db.query(User).filter(User.id == user_id).first()
+
+def get_user_by_email(db: Session, email: str):
+    return db.query(User).filter(User.email == email).first()
+
+def create_user(db: Session, user: UserCreate):
+    hashed_password = pwd_context.hash(user.password)
+    db_user = User(
+        email=user.email,
+        hashed_password=hashed_password,
+        is_active=True
+    )
+    db.add(db_user)
+    db.commit()
+    db.refresh(db_user)
+    return db_user
+
+def get_users(db: Session, skip: int = 0, limit: int = 100):
+    return db.query(User).offset(skip).limit(limit).all()
+
+# Account CRUD operations
+def get_account(db: Session, account_id: int):
+    return db.query(Account).filter(Account.id == account_id).first()
+
+def get_accounts(db: Session, skip: int = 0, limit: int = 100):
+    return db.query(Account).offset(skip).limit(limit).all()
+
+def get_accounts_by_user(db: Session, user_id: int):
+    return db.query(Account).filter(Account.user_id == user_id).all()
+
+def create_account(db: Session, account: AccountCreate, user_id: int):
+    db_account = Account(
+        email=account.email,
+        name=account.name,
+        encrypted_credentials=account.encrypted_credentials,
+        daily_limit=account.daily_limit or 500,
+        hourly_limit=account.hourly_limit or 50,
+        user_id=user_id,
+        is_active=True
+    )
+    db.add(db_account)
+    db.commit()
+    db.refresh(db_account)
+    return db_account
+
+def update_account(db: Session, account_id: int, account_update: dict):
+    db_account = db.query(Account).filter(Account.id == account_id).first()
+    if db_account:
+        for key, value in account_update.items():
+            setattr(db_account, key, value)
+        db.commit()
+        db.refresh(db_account)
+    return db_account
+
+def delete_account(db: Session, account_id: int):
+    db_account = db.query(Account).filter(Account.id == account_id).first()
+    if db_account:
+        db.delete(db_account)
+        db.commit()
+    return db_account
+
+# Campaign CRUD operations
+def get_campaign(db: Session, campaign_id: int):
+    return db.query(Campaign).filter(Campaign.id == campaign_id).first()
+
+def get_campaigns(db: Session, skip: int = 0, limit: int = 100):
+    return db.query(Campaign).offset(skip).limit(limit).all()
+
+def get_campaigns_by_user(db: Session, user_id: int):
+    return db.query(Campaign).filter(Campaign.user_id == user_id).all()
+
+def create_campaign(db: Session, campaign: CampaignCreate, user_id: int):
+    db_campaign = Campaign(
+        name=campaign.name,
+        subject=campaign.subject,
+        content=campaign.content,
+        status="draft",
+        user_id=user_id,
+        account_id=campaign.account_id if hasattr(campaign, 'account_id') else None
+    )
+    db.add(db_campaign)
+    db.commit()
+    db.refresh(db_campaign)
+    return db_campaign
+
+def update_campaign(db: Session, campaign_id: int, campaign_update: dict):
+    db_campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
+    if db_campaign:
+        for key, value in campaign_update.items():
+            setattr(db_campaign, key, value)
+        db.commit()
+        db.refresh(db_campaign)
+    return db_campaign
+
+def delete_campaign(db: Session, campaign_id: int):
+    db_campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
+    if db_campaign:
+        db.delete(db_campaign)
+        db.commit()
+    return db_campaign
+
+# Email CRUD operations
+def get_email(db: Session, email_id: int):
+    return db.query(Email).filter(Email.id == email_id).first()
+
+def get_emails_by_campaign(db: Session, campaign_id: int):
+    return db.query(Email).filter(Email.campaign_id == campaign_id).all()
+
+def create_email(db: Session, recipient_email: str, recipient_name: str, campaign_id: int):
+    db_email = Email(
+        recipient_email=recipient_email,
+        recipient_name=recipient_name,
+        campaign_id=campaign_id,
+        status="pending"
+    )
+    db.add(db_email)
+    db.commit()
+    db.refresh(db_email)
+    return db_email
+
+def update_email_status(db: Session, email_id: int, status: str, error_message: str = None):
+    db_email = db.query(Email).filter(Email.id == email_id).first()
+    if db_email:
+        db_email.status = status
+        if error_message:
+            db_email.error_message = error_message
+        if status == "sent":
+            db_email.sent_at = func.now()
+        db.commit()
+        db.refresh(db_email)
+    return db_email
+
+# Campaign statistics
+def get_campaign_stats(db: Session, campaign_id: int):
+    stats = db.query(
+        func.count(Email.id).label('total'),
+        func.sum(func.case([(Email.status == 'sent', 1)], else_=0)).label('sent'),
+        func.sum(func.case([(Email.status == 'pending', 1)], else_=0)).label('pending'),
+        func.sum(func.case([(Email.status == 'failed', 1)], else_=0)).label('failed')
+    ).filter(Email.campaign_id == campaign_id).first()
+    
+    return {
+        'total': int(stats.total or 0),
+        'sent': int(stats.sent or 0),
+        'pending': int(stats.pending or 0),
+        'failed': int(stats.failed or 0)
+    }
+CRUDEOF
+
+    # Create production-ready schemas
+    log "Creating production-ready schemas..."
+    cat > backend/schemas.py << 'SCHEMASEOF'
+from pydantic import BaseModel, EmailStr
+from typing import Optional, List
+from datetime import datetime
+from enum import Enum
+
+class CampaignStatus(str, Enum):
+    DRAFT = "draft"
+    SENDING = "sending"
+    PAUSED = "paused"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+class EmailStatus(str, Enum):
+    PENDING = "pending"
+    SENT = "sent"
+    FAILED = "failed"
+
+# User schemas
+class UserBase(BaseModel):
+    email: EmailStr
+
+class UserCreate(UserBase):
+    password: str
+
+class User(UserBase):
+    id: int
+    is_active: bool
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+# Account schemas
+class AccountBase(BaseModel):
+    email: EmailStr
+    name: str
+
+class AccountCreate(AccountBase):
+    encrypted_credentials: str
+    daily_limit: Optional[int] = 500
+    hourly_limit: Optional[int] = 50
+
+class AccountUpdate(BaseModel):
+    name: Optional[str] = None
+    daily_limit: Optional[int] = None
+    hourly_limit: Optional[int] = None
+    is_active: Optional[bool] = None
+
+class Account(AccountBase):
+    id: int
+    is_active: bool
+    daily_limit: int
+    hourly_limit: int
+    created_at: datetime
+    user_id: int
+
+    class Config:
+        from_attributes = True
+
+# Campaign schemas
+class CampaignBase(BaseModel):
+    name: str
+    subject: str
+    content: str
+
+class CampaignCreate(CampaignBase):
+    account_id: Optional[int] = None
+
+class CampaignUpdate(BaseModel):
+    name: Optional[str] = None
+    subject: Optional[str] = None
+    content: Optional[str] = None
+    status: Optional[CampaignStatus] = None
+    account_id: Optional[int] = None
+
+class CampaignStats(BaseModel):
+    total: int
+    sent: int
+    pending: int
+    failed: int
+
+class Campaign(CampaignBase):
+    id: int
+    status: CampaignStatus
+    created_at: datetime
+    updated_at: Optional[datetime]
+    user_id: int
+    account_id: Optional[int]
+    stats: CampaignStats
+
+    class Config:
+        from_attributes = True
+
+# Email schemas
+class EmailBase(BaseModel):
+    recipient_email: EmailStr
+    recipient_name: Optional[str] = None
+
+class EmailCreate(EmailBase):
+    campaign_id: int
+
+class Email(EmailBase):
+    id: int
+    status: EmailStatus
+    sent_at: Optional[datetime]
+    error_message: Optional[str]
+    created_at: datetime
+    campaign_id: int
+
+    class Config:
+        from_attributes = True
+
+# Response schemas
+class Message(BaseModel):
+    message: str
+
+class HealthCheck(BaseModel):
+    status: str
+    message: str
+    version: Optional[str] = "1.0.0"
+SCHEMASEOF
+
     log "Starting all services..."
     docker-compose up -d
     
-    # Wait and check
-    log "Waiting for services to start..."
-    sleep 60
+    # Wait longer for all services to properly start
+    log "Waiting for all services to start properly..."
+    sleep 90
     
     log "Checking service status..."
     docker-compose ps
