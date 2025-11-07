@@ -255,13 +255,17 @@ FROM node:20-alpine as builder
 # Set working directory
 WORKDIR /app
 
+# Install build dependencies
+RUN apk add --no-cache git
+
 # Copy package files
 COPY package.json ./
 COPY tsconfig.json ./
 COPY vite.config.ts ./
 
-# Install dependencies with legacy peer deps to avoid conflicts
-RUN npm install --legacy-peer-deps
+# Clean npm cache and install dependencies
+RUN npm cache clean --force
+RUN npm install --legacy-peer-deps --no-audit --no-fund --ignore-scripts
 
 # Copy source code
 COPY . .
