@@ -30,6 +30,192 @@ info() {
     echo -e "${BLUE}[INFO]${NC} $1"
 }
 
+# Check if running as root
+check_root() {
+    if [[ $EUID -eq 0 ]]; then
+        warn "Running as root. This is not recommended but proceeding..."
+    fi
+}
+
+# Check Ubuntu version
+check_ubuntu_version() {
+    if ! grep -q "Ubuntu" /etc/os-release; then
+        error "This script is designed for Ubuntu. Detected: $(cat /etc/os-release | grep PRETTY_NAME)"
+        exit 1
+    fi
+    
+    UBUNTU_VERSION=$(lsb_release -rs 2>/dev/null || echo "22.04")
+    log "Ubuntu $UBUNTU_VERSION detected"
+}
+
+# Install system dependencies
+install_system_dependencies() {
+    log "Installing system dependencies..."
+    
+    # Update package list
+    apt update
+    
+    # Install essential packages
+    apt install -y \
+        curl \
+        wget \
+        git \
+        build-essential \
+        python3 \
+        python3-pip \
+        python3-venv \
+        apt-transport-https \
+        ca-certificates \
+        gnupg \
+        lsb-release \
+        software-properties-common \
+        unzip \
+        jq \
+        htop \
+        nano \
+        vim
+    
+    log "System dependencies installed successfully"
+}
+
+# Install Docker
+install_docker() {
+    log "Installing Docker..."
+    
+    if command -v docker &> /dev/null; then
+        log "Docker is already installed"
+        return 0
+    fi
+    
+    # Remove old Docker versions
+    apt remove -y docker docker-engine docker.io containerd runc || true
+    
+    # Add Docker's official GPG key
+    mkdir -p /etc/apt/keyrings
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+    
+    # Add Docker repository
+    echo \
+        "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
+        $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
+    
+    # Install Docker
+    apt update
+    apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+    
+    # Start and enable Docker
+    systemctl start docker
+    systemctl enable docker
+    
+    # Add user to docker group if not root
+    if [[ $EUID -ne 0 ]]; then
+        usermod -aG docker $USER
+        warn "You may need to log out and back in for Docker group changes to take effect"
+    fi
+    
+    log "Docker installed successfully"
+}
+
+# Install Docker Compose (standalone)
+install_docker_compose() {
+    log "Installing Docker Compose..."
+    
+    if command -v docker-compose &> /dev/null; then
+        log "Docker Compose is already installed"
+        return 0
+    fi
+    
+    # Install Docker Compose standalone
+    DOCKER_COMPOSE_VERSION="v2.23.0"
+    curl -L "https://github.com/docker/compose/releases/download/${DOCKER_COMPOSE_VERSION}/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+    chmod +x /usr/local/bin/docker-compose
+    
+    # Create symlink if needed
+    ln -sf /usr/local/bin/docker-compose /usr/bin/docker-compose
+    
+    # Verify installation
+    docker-compose --version
+    
+    log "Docker Compose installed successfully"
+}
+
+# Install Node.js
+install_nodejs() {
+    log "Installing Node.js..."
+    
+    if command -v node &> /dev/null; then
+        NODE_VERSION=$(node --version)
+        log "Node.js $NODE_VERSION is already installed"
+        return 0
+    fi
+    
+    # Install Node.js 18 LTS
+    curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
+    apt install -y nodejs
+    
+    # Verify installation
+    node --version
+    npm --version
+    
+    log "Node.js installed successfully"
+}
+
+# Setup environment file
+setup_environment() {
+    log "Setting up environment configuration..."
+    
+    if [[ ! -f .env ]]; then
+        if [[ -f .env.template ]]; then
+            cp .env.template .env
+            log "Created .env from template"
+        else
+            cat > .env << EOF
+# Database Configuration
+DATABASE_URL=postgresql://speedsend_user:speedsend_password@db:5432/speedsend_db
+POSTGRES_DB=speedsend_db
+POSTGRES_USER=speedsend_user
+POSTGRES_PASSWORD=speedsend_password
+
+# Redis Configuration
+REDIS_URL=redis://redis:6379/0
+
+# Security
+SECRET_KEY=$(openssl rand -hex 32)
+ENCRYPTION_KEY=$(openssl rand -base64 32)
+
+# Gmail API Configuration
+GMAIL_RATE_LIMIT_PER_HOUR=1800
+
+# Celery Configuration
+CELERY_WORKER_CONCURRENCY=50
+CELERY_TASK_TIMEOUT=300
+
+# Application Configuration
+DEBUG=false
+ENVIRONMENT=production
+EOF
+            log "Created default .env file"
+        fi
+    else
+        log ".env file already exists"
+    fi
+}
+
+# Clean up old containers and data
+cleanup_old_deployment() {
+    log "Cleaning up old deployment..."
+    
+    # Stop and remove containers
+    if docker-compose ps -q &> /dev/null; then
+        docker-compose down --volumes --remove-orphans || true
+    fi
+    
+    # Remove dangling images
+    docker image prune -f || true
+    
+    log "Cleanup completed"
+}
+
 # Fix backend import issues
 fix_backend_imports() {
     log "Fixing backend import issues..."
@@ -323,7 +509,15 @@ show_final_summary() {
 main() {
     case "${1:-install}" in
         "install"|"")
-            log "Starting Speed-Send deployment..."
+            log "Starting Speed-Send fresh installation..."
+            check_root
+            check_ubuntu_version
+            install_system_dependencies
+            install_docker
+            install_docker_compose
+            install_nodejs
+            setup_environment
+            cleanup_old_deployment
             fix_backend_imports
             start_services
             show_deployment_status
@@ -331,7 +525,8 @@ main() {
             ;;
         "reinstall"|"--reinstall")
             log "Reinstalling Speed-Send..."
-            docker-compose down --volumes --remove-orphans || true
+            check_root
+            cleanup_old_deployment
             fix_backend_imports
             start_services
             show_deployment_status
@@ -345,15 +540,38 @@ main() {
             docker-compose restart
             show_deployment_status
             ;;
+        "clean"|"--clean")
+            log "Clean installation (removes all data)..."
+            check_root
+            check_ubuntu_version
+            install_system_dependencies
+            install_docker
+            install_docker_compose
+            install_nodejs
+            # Clean everything
+            docker-compose down --volumes --remove-orphans || true
+            docker system prune -af || true
+            setup_environment
+            fix_backend_imports
+            start_services
+            show_deployment_status
+            show_final_summary
+            ;;
         "help"|"--help"|"-h")
             echo "Speed-Send Deployment Script"
             echo "Usage: ./deploy.sh [command]"
             echo ""
             echo "Commands:"
-            echo "  install     - Fresh installation (default)"
-            echo "  reinstall   - Reinstall with clean volumes"
+            echo "  install     - Fresh installation with all dependencies (default)"
+            echo "  reinstall   - Reinstall application (keeps system dependencies)"
+            echo "  clean       - Clean installation (removes all data and containers)"
             echo "  fix         - Fix common issues"
             echo "  help        - Show this help"
+            echo ""
+            echo "Requirements:"
+            echo "  - Ubuntu 20.04+ (tested on Ubuntu 22.04)"
+            echo "  - Run as root or user with sudo privileges"
+            echo "  - Internet connection for downloading dependencies"
             ;;
         *)
             error "Unknown command: $1"
