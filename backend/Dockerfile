@@ -18,17 +18,11 @@ RUN apt-get update && apt-get install -y \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Poetry with specific version
-RUN pip install --no-cache-dir poetry==1.6.1
-
 # Copy dependency files
-COPY pyproject.toml requirements.txt ./
+COPY requirements.txt ./
 
-# Try Poetry first, fallback to pip if it fails
-RUN poetry config virtualenvs.create false && \
-    poetry config virtualenvs.in-project false && \
-    (poetry install --only=main --no-interaction --no-ansi --no-cache || \
-     pip install --no-cache-dir -r requirements.txt)
+# Install dependencies directly with pip (more reliable for Docker builds)
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
 COPY . /app/
