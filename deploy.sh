@@ -1,18 +1,16 @@
 #!/bin/bash
 
-# Speed-Send Email Platform - Complete Deployment Script
-# This script installs everything needed on a fresh server and deploys the application
+# Speed-Send Email Platform - Complete Fixed Deployment
+# Ubuntu 22.04 - Fixes: Missing frontend, backend health, dependencies
 
-set -e  # Exit on any error
+set -e
 
-# Color codes for output
-RED='\033[0;31m'
+# Colors
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+RED='\033[0;31m'
+NC='\033[0m'
 
-# Logging function
 log() {
     echo -e "${GREEN}[$(date +'%Y-%m-%d %H:%M:%S')] $1${NC}"
 }
@@ -26,427 +24,378 @@ error() {
     exit 1
 }
 
-# Check if running as root
-check_root() {
-    if [[ $EUID -eq 0 ]]; then
-        warn "Running as root. This is not recommended for production."
-        read -p "Continue anyway? (y/N): " -n 1 -r
-        echo
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            exit 1
-        fi
+# Clean up all old deployment files
+cleanup_old_files() {
+    log "Cleaning up old deployment files..."
+    rm -f fix-installation.sh fix-deployment.sh nuclear-fix-deployment.sh
+    rm -f quick-deploy.sh quick-deploy-ubuntu.sh setup-complete-project.sh  
+    rm -f fix-poetry.sh fix-copy-command.sh force-rebuild.sh clear-cache-rebuild.sh
+    rm -f verify-project-structure.sh frontend-fix.sh quick-fix.sh immediate-fix.sh
+    rm -f complete-frontend-fix.sh deploy-final.sh check-status.sh status-check.md
+    rm -f deploy.bat DEPLOYMENT.md nginx-frontend.conf
+    rm -f backend/Dockerfile.old docker-compose-frontend-fix.yml docker-compose-backup.yml
+    rm -f Dockerfile nginx-frontend.conf
+    log "Old files cleaned up"
+}
+
+# Detect OS and install dependencies
+install_dependencies() {
+    log "Installing dependencies for Ubuntu 22.04..."
+    
+    # Update system
+    apt-get update -y
+    apt-get upgrade -y
+    apt-get install -y curl wget git unzip software-properties-common apt-transport-https ca-certificates gnupg lsb-release
+    
+    # Install Docker
+    if ! command -v docker &> /dev/null; then
+        log "Installing Docker..."
+        curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+        echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
+        apt-get update -y
+        apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+        systemctl start docker
+        systemctl enable docker
+        usermod -aG docker $USER
+    fi
+    
+    # Install Docker Compose
+    if ! command -v docker-compose &> /dev/null; then
+        log "Installing Docker Compose..."
+        DOCKER_COMPOSE_VERSION=$(curl -s https://api.github.com/repos/docker/compose/releases/latest | grep tag_name | cut -d '"' -f 4)
+        curl -L "https://github.com/docker/compose/releases/download/${DOCKER_COMPOSE_VERSION}/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+        chmod +x /usr/local/bin/docker-compose
+    fi
+    
+    # Install Node.js
+    if ! command -v node &> /dev/null; then
+        log "Installing Node.js..."
+        curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
+        apt-get install -y nodejs
     fi
 }
 
-# Detect OS
-detect_os() {
-    log "Detecting operating system..."
-    if [[ "$OSTYPE" == "linux-gnu"* ]]; then
-        if [ -f /etc/debian_version ]; then
-            OS="ubuntu"
-            log "Detected Ubuntu/Debian system"
-        elif [ -f /etc/redhat-release ]; then
-            OS="centos"
-            log "Detected CentOS/RHEL system"
-        else
-            error "Unsupported Linux distribution"
-        fi
-    else
-        error "Unsupported operating system: $OSTYPE"
-    fi
-}
+# Fix all configuration issues
+fix_all_configurations() {
+    log "Fixing all configurations..."
+    
+    # Fix backend requirements
+    log "Fixing backend requirements.txt..."
+    cat > backend/requirements.txt << 'EOF'
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+pydantic[email]==2.5.0
+pydantic-settings==2.1.0
+email-validator==2.1.0
+sqlalchemy==2.0.23
+alembic==1.13.1
+psycopg2-binary==2.9.9
+celery==5.3.4
+redis==5.0.1
+celery-redbeat==2.0.0
+cryptography==41.0.7
+google-api-python-client==2.108.0
+google-auth==2.25.2
+python-multipart==0.0.6
+python-dotenv==1.0.0
+passlib[bcrypt]==1.7.4
+aiohttp==3.9.1
+EOF
 
-# Update system packages
-update_system() {
-    log "Updating system packages..."
-    if [ "$OS" = "ubuntu" ]; then
-        sudo apt-get update -y
-        sudo apt-get upgrade -y
-        sudo apt-get install -y curl wget git unzip software-properties-common apt-transport-https ca-certificates gnupg lsb-release
-    elif [ "$OS" = "centos" ]; then
-        sudo yum update -y
-        sudo yum install -y curl wget git unzip epel-release
-    fi
-}
+    # Fix backend health endpoint
+    log "Fixing backend health endpoint..."
+    cat > backend/api/v1/endpoints/health.py << 'EOF'
+from fastapi import APIRouter
 
-# Install Docker
-install_docker() {
-    log "Installing Docker..."
-    
-    if command -v docker &> /dev/null; then
-        log "Docker already installed. Version: $(docker --version)"
-        return
-    fi
-    
-    if [ "$OS" = "ubuntu" ]; then
-        # Remove old versions
-        sudo apt-get remove -y docker docker-engine docker.io containerd runc || true
-        
-        # Add Docker's official GPG key
-        curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
-        
-        # Set up the stable repository
-        echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-        
-        # Install Docker Engine
-        sudo apt-get update -y
-        sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-        
-    elif [ "$OS" = "centos" ]; then
-        # Install Docker on CentOS
-        sudo yum install -y yum-utils
-        sudo yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
-        sudo yum install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-    fi
-    
-    # Start and enable Docker
-    sudo systemctl start docker
-    sudo systemctl enable docker
-    
-    # Add current user to docker group
-    sudo usermod -aG docker $USER
-    
-    log "Docker installed successfully!"
-}
+router = APIRouter()
 
-# Install Docker Compose (standalone version as backup)
-install_docker_compose() {
-    log "Installing Docker Compose..."
-    
-    if command -v docker-compose &> /dev/null; then
-        log "Docker Compose already installed. Version: $(docker-compose --version)"
-        return
-    fi
-    
-    # Install latest Docker Compose
-    DOCKER_COMPOSE_VERSION=$(curl -s https://api.github.com/repos/docker/compose/releases/latest | grep tag_name | cut -d '"' -f 4)
-    sudo curl -L "https://github.com/docker/compose/releases/download/${DOCKER_COMPOSE_VERSION}/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-    sudo chmod +x /usr/local/bin/docker-compose
-    
-    log "Docker Compose installed successfully!"
-}
+@router.get("/health")
+def health_check():
+    return {"status": "healthy", "message": "Speed-Send API is running"}
 
-# Install Node.js and npm (for frontend building if needed)
-install_nodejs() {
-    log "Installing Node.js..."
-    
-    if command -v node &> /dev/null; then
-        log "Node.js already installed. Version: $(node --version)"
-        return
-    fi
-    
-    # Install Node.js 18.x
-    if [ "$OS" = "ubuntu" ]; then
-        curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
-        sudo apt-get install -y nodejs
-    elif [ "$OS" = "centos" ]; then
-        curl -fsSL https://rpm.nodesource.com/setup_18.x | sudo bash -
-        sudo yum install -y nodejs
-    fi
-    
-    log "Node.js installed successfully!"
-}
+@router.get("/")
+def root():
+    return {"message": "Speed-Send API", "status": "healthy"}
+EOF
 
-# Setup firewall
-setup_firewall() {
-    log "Configuring firewall..."
-    
-    if [ "$OS" = "ubuntu" ]; then
-        # Install and configure UFW
-        sudo apt-get install -y ufw
-        sudo ufw --force enable
-        sudo ufw allow ssh
-        sudo ufw allow 80/tcp
-        sudo ufw allow 443/tcp
-        sudo ufw allow 3000/tcp  # Frontend dev port
-        sudo ufw allow 8000/tcp  # Backend dev port
-        sudo ufw reload
-    elif [ "$OS" = "centos" ]; then
-        # Configure firewalld
-        sudo systemctl start firewalld
-        sudo systemctl enable firewalld
-        sudo firewall-cmd --permanent --add-service=ssh
-        sudo firewall-cmd --permanent --add-service=http
-        sudo firewall-cmd --permanent --add-service=https
-        sudo firewall-cmd --permanent --add-port=3000/tcp
-        sudo firewall-cmd --permanent --add-port=8000/tcp
-        sudo firewall-cmd --reload
+    # Update main.py to include health route at root
+    log "Updating main.py..."
+    if ! grep -q "app.get.*health" backend/main.py; then
+        cat >> backend/main.py << 'EOF'
+
+# Add root health endpoint
+@app.get("/health")
+def health_check():
+    return {"status": "healthy", "message": "Speed-Send API is running"}
+
+@app.get("/")
+def root():
+    return {"message": "Speed-Send API", "status": "healthy"}
+EOF
     fi
-    
-    log "Firewall configured successfully!"
-}
 
-# Create necessary directories
-create_directories() {
-    log "Creating application directories..."
-    
-    mkdir -p logs
-    mkdir -p data/postgres
-    mkdir -p data/redis
-    mkdir -p backend/uploads
-    chmod 755 logs data backend/uploads
-    
-    log "Directories created successfully!"
+    # Create package.json for frontend
+    log "Creating package.json..."
+    cat > package.json << 'EOF'
+{
+  "name": "speed-send",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "uuid": "^9.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.2.0",
+    "@types/react-dom": "^18.2.0",
+    "@types/uuid": "^9.0.0",
+    "@vitejs/plugin-react": "^4.0.0",
+    "typescript": "^5.0.0",
+    "vite": "^4.4.0"
+  }
 }
+EOF
 
-# Generate .env file if it doesn't exist
-create_env_file() {
-    log "Setting up environment configuration..."
-    
+    # Fix docker-compose.yml
+    log "Creating fixed docker-compose.yml..."
+    cat > docker-compose.yml << 'EOF'
+version: '3.8'
+
+services:
+  db:
+    image: postgres:15-alpine
+    container_name: speedsend_db
+    volumes:
+      - postgres_data:/var/lib/postgresql/data/
+    environment:
+      - POSTGRES_USER=speedsend
+      - POSTGRES_PASSWORD=speedsend123
+      - POSTGRES_DB=speedsend
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U speedsend -d speedsend"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: speedsend_redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  backend:
+    build: ./backend
+    container_name: speedsend_backend
+    environment:
+      - DATABASE_URL=postgresql://speedsend:speedsend123@db:5432/speedsend
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+      - ./uploads:/app/uploads
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+    restart: unless-stopped
+
+  celery_worker:
+    build: ./backend
+    container_name: speedsend_celery_worker
+    environment:
+      - DATABASE_URL=postgresql://speedsend:speedsend123@db:5432/speedsend
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+    volumes:
+      - ./backend:/app
+      - ./uploads:/app/uploads
+    depends_on:
+      backend:
+        condition: service_started
+    command: celery -A tasks.celery_app worker -l info -c 4
+    restart: unless-stopped
+
+  celery_beat:
+    build: ./backend
+    container_name: speedsend_celery_beat
+    environment:
+      - DATABASE_URL=postgresql://speedsend:speedsend123@db:5432/speedsend
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+    volumes:
+      - ./backend:/app
+    depends_on:
+      backend:
+        condition: service_started
+    command: celery -A tasks.celery_app beat -l info --pidfile=/tmp/celerybeat.pid --scheduler=redbeat.RedBeatScheduler
+    restart: unless-stopped
+  
+  frontend:
+    image: node:18-alpine
+    container_name: speedsend_frontend
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./:/app
+      - /app/node_modules
+    working_dir: /app
+    environment:
+      - NODE_ENV=development
+    depends_on:
+      - backend
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+EOF
+
+    # Create .env file
     if [ ! -f .env ]; then
-        log "Creating .env file from template..."
-        cp .env.template .env
-        
-        # Generate random secrets
-        JWT_SECRET=$(openssl rand -hex 32)
-        DB_PASSWORD=$(openssl rand -base64 32 | tr -d "=+/" | cut -c1-25)
-        REDIS_PASSWORD=$(openssl rand -base64 32 | tr -d "=+/" | cut -c1-25)
-        
-        # Update .env file with generated values
-        sed -i "s/your-super-secret-jwt-key-here/$JWT_SECRET/g" .env
-        sed -i "s/your-secure-db-password/$DB_PASSWORD/g" .env
-        sed -i "s/your-redis-password/$REDIS_PASSWORD/g" .env
-        
-        warn "Please edit .env file with your specific configuration:"
-        warn "- Gmail API credentials"
-        warn "- Domain settings"
-        warn "- SMTP settings (if needed)"
-        warn "- Other environment-specific values"
-    else
-        log ".env file already exists"
+        log "Creating .env file..."
+        cat > .env << 'EOF'
+# Database
+POSTGRES_USER=speedsend
+POSTGRES_PASSWORD=speedsend123
+POSTGRES_DB=speedsend
+DATABASE_URL=postgresql://speedsend:speedsend123@db:5432/speedsend
+
+# Redis
+REDIS_URL=redis://redis:6379/0
+
+# Celery
+CELERY_BROKER_URL=redis://redis:6379/0
+CELERY_RESULT_BACKEND=redis://redis:6379/0
+CELERY_WORKER_CONCURRENCY=4
+
+# Gmail API (CONFIGURE THESE!)
+GMAIL_CLIENT_ID=your-gmail-client-id-here
+GMAIL_CLIENT_SECRET=your-gmail-client-secret-here
+
+# Security
+JWT_SECRET_KEY=your-super-secret-jwt-key-here
+ALGORITHM=HS256
+ACCESS_TOKEN_EXPIRE_MINUTES=30
+EOF
     fi
 }
 
-# Fix common Docker issues
-fix_docker_issues() {
-    log "Fixing common Docker issues..."
+# Deploy application
+deploy_application() {
+    log "Deploying Speed-Send application..."
     
-    # Ensure Docker daemon is running
-    sudo systemctl restart docker
-    
-    # Clean up any existing containers/images that might conflict
+    # Stop and clean
+    docker-compose down --remove-orphans || true
     docker system prune -f || true
     
-    # Remove any existing project containers
-    docker-compose down --remove-orphans || true
+    # Create directories
+    mkdir -p logs uploads backend/uploads
+    chmod 755 logs uploads backend/uploads
     
-    log "Docker issues fixed!"
-}
-
-# Build and start the application
-deploy_application() {
-    log "Building and deploying Speed-Send application..."
-    
-    # Ensure we have the latest code
-    if [ -d .git ]; then
-        log "Updating code from Git..."
-        git pull origin main || git pull origin master || warn "Could not pull latest code"
-    fi
-    
-    # Build and start containers
-    log "Building Docker containers..."
+    # Build and start
+    log "Building containers..."
     docker-compose build --no-cache
     
-    log "Starting application..."
+    log "Starting services..."
     docker-compose up -d
     
-    # Wait for services to be ready
+    # Wait and check
     log "Waiting for services to start..."
-    sleep 30
+    sleep 60
     
-    # Check if services are running
-    if docker-compose ps | grep -q "Up"; then
-        log "Application deployed successfully!"
-        log "Frontend: http://localhost:3000"
-        log "Backend API: http://localhost:8000"
-        log "Backend Docs: http://localhost:8000/docs"
-    else
-        error "Application failed to start. Check logs with: docker-compose logs"
-    fi
-}
-
-# Check application health
-check_health() {
-    log "Checking application health..."
-    
-    # Check backend health
-    if curl -s http://localhost:8000/health > /dev/null; then
-        log "✓ Backend is healthy"
-    else
-        warn "✗ Backend health check failed"
-    fi
-    
-    # Check frontend
-    if curl -s http://localhost:3000 > /dev/null; then
-        log "✓ Frontend is accessible"
-    else
-        warn "✗ Frontend is not accessible"
-    fi
-    
-    # Show running containers
-    log "Running containers:"
+    log "Checking service status..."
     docker-compose ps
+    
+    # Test endpoints
+    log "Testing endpoints..."
+    
+    # Test backend
+    if curl -s --connect-timeout 10 http://localhost:8000/health > /dev/null; then
+        log "✅ Backend health check passed"
+    else
+        warn "❌ Backend health check failed"
+        docker logs speedsend_backend | tail -10
+    fi
+    
+    # Test frontend
+    if curl -s --connect-timeout 10 http://localhost:3000 > /dev/null; then
+        log "✅ Frontend is accessible"
+    else
+        warn "❌ Frontend not accessible"
+        docker logs speedsend_frontend | tail -10
+    fi
 }
 
-# Setup log rotation
-setup_logging() {
-    log "Setting up log rotation..."
-    
-    sudo tee /etc/logrotate.d/speed-send << EOF
-/home/$USER/speed-send/logs/*.log {
-    daily
-    missingok
-    rotate 30
-    compress
-    delaycompress
-    notifempty
-    copytruncate
-}
-EOF
-    
-    log "Log rotation configured!"
-}
-
-# Create systemd service for auto-start
-create_systemd_service() {
-    log "Creating systemd service for auto-start..."
-    
-    sudo tee /etc/systemd/system/speed-send.service << EOF
-[Unit]
-Description=Speed-Send Email Platform
-Requires=docker.service
-After=docker.service
-
-[Service]
-Type=oneshot
-RemainAfterExit=true
-WorkingDirectory=/home/$USER/speed-send
-ExecStart=/usr/local/bin/docker-compose up -d
-ExecStop=/usr/local/bin/docker-compose down
-User=$USER
-Group=docker
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-    sudo systemctl daemon-reload
-    sudo systemctl enable speed-send.service
-    
-    log "Systemd service created and enabled!"
-}
-
-# Display final information
-show_final_info() {
-    log "=================================="
-    log "Speed-Send Platform Deployed Successfully!"
-    log "=================================="
+# Show final status
+show_status() {
+    log "========================================="
+    log "  Speed-Send Deployment Complete!"
+    log "========================================="
     echo
     log "Access URLs:"
-    log "Frontend:     http://$(hostname -I | awk '{print $1}'):3000"
-    log "Backend API:  http://$(hostname -I | awk '{print $1}'):8000"
-    log "API Docs:     http://$(hostname -I | awk '{print $1}'):8000/docs"
+    log "Frontend:    http://localhost:3000"
+    log "Backend API: http://localhost:8000"
+    log "API Docs:    http://localhost:8000/docs"
+    log "Health:      http://localhost:8000/health"
+    echo
+    log "Container Status:"
+    docker-compose ps
+    echo
+    warn "⚠️  Configure Gmail API credentials in .env file!"
     echo
     log "Useful Commands:"
-    log "View logs:        docker-compose logs -f"
-    log "Restart app:      docker-compose restart"
-    log "Stop app:         docker-compose down"
-    log "Update app:       git pull && docker-compose up --build -d"
+    log "View logs:   docker-compose logs -f"
+    log "Restart:     docker-compose restart"
+    log "Stop:        docker-compose down"
     echo
-    log "Configuration:"
-    log "Edit .env file to customize settings"
-    log "Application data is stored in ./data/"
-    log "Logs are stored in ./logs/"
-    echo
-    warn "Don't forget to:"
-    warn "1. Configure your Gmail API credentials in .env"
-    warn "2. Set up SSL certificates for production"
-    warn "3. Configure domain DNS settings"
-    warn "4. Review security settings"
-    echo
-    log "Deployment completed successfully! 🚀"
 }
 
-# Main deployment function
+# Main execution
 main() {
-    log "Starting Speed-Send Email Platform deployment..."
-    echo
+    log "Starting Speed-Send fixed deployment for Ubuntu 22.04..."
     
-    # Pre-flight checks
-    check_root
-    detect_os
-    
-    # System setup
-    update_system
-    install_docker
-    install_docker_compose
-    install_nodejs
-    setup_firewall
-    
-    # Application setup
-    create_directories
-    create_env_file
-    fix_docker_issues
-    
-    # Deploy application
+    cleanup_old_files
+    install_dependencies
+    fix_all_configurations
     deploy_application
-    
-    # Post-deployment setup
-    check_health
-    setup_logging
-    create_systemd_service
-    
-    # Final information
-    show_final_info
+    show_status
 }
 
-# Handle script arguments
+# Handle arguments
 case "${1:-}" in
-    "install")
-        log "Installing dependencies only..."
-        detect_os
-        update_system
-        install_docker
-        install_docker_compose
-        install_nodejs
-        setup_firewall
-        log "Dependencies installed successfully!"
+    "clean")
+        cleanup_old_files
+        docker-compose down --remove-orphans
+        docker system prune -f
+        ;;
+    "config")
+        fix_all_configurations
         ;;
     "deploy")
-        log "Deploying application only..."
-        create_directories
-        create_env_file
-        fix_docker_issues
         deploy_application
-        check_health
-        ;;
-    "restart")
-        log "Restarting application..."
-        docker-compose down
-        docker-compose up -d
-        check_health
-        ;;
-    "logs")
-        log "Showing application logs..."
-        docker-compose logs -f
-        ;;
-    "status")
-        log "Checking application status..."
-        docker-compose ps
-        check_health
-        ;;
-    "update")
-        log "Updating application..."
-        git pull origin main || git pull origin master
-        docker-compose down
-        docker-compose build --no-cache
-        docker-compose up -d
-        check_health
-        ;;
-    "clean")
-        log "Cleaning up Docker resources..."
-        docker-compose down --volumes --remove-orphans
-        docker system prune -af
         ;;
     *)
         main
