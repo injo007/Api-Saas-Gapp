@@ -157,7 +157,7 @@ const DashboardView: React.FC<DashboardViewProps> = ({
                 </div>
               </Card>
             );
-          })
+          })}
         </div>
       )}
     </div>
