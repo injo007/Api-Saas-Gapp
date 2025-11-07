@@ -307,11 +307,17 @@ cleanup_deployment() {
 build_images() {
     print_step "Building Docker images..."
     
-    # Build with no cache for fresh builds
+    # Always build backend with no cache to avoid Poetry issues
+    print_step "Building backend with no cache..."
+    $DOCKER_COMPOSE_CMD build --no-cache backend
+    
+    # Build other services
     if [[ "$DEPLOYMENT_MODE" == "reinstall" ]] || [[ "$DEPLOYMENT_MODE" == "reset" ]]; then
-        $DOCKER_COMPOSE_CMD build --no-cache
+        print_step "Building all other services with no cache..."
+        $DOCKER_COMPOSE_CMD build --no-cache frontend
     else
-        $DOCKER_COMPOSE_CMD build
+        print_step "Building frontend..."
+        $DOCKER_COMPOSE_CMD build frontend
     fi
     
     print_success "Docker images built"
