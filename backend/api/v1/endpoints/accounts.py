@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, File, UploadFile, Form
 from sqlalchemy.orm import Session
 from typing import List
 import json
@@ -13,13 +13,38 @@ router = APIRouter()
 
 
 @router.post("/accounts", response_model=schemas.Account, status_code=status.HTTP_201_CREATED)
-def create_account(
-    account: schemas.AccountCreate,
+async def create_account(
+    name: str = Form(...),
+    admin_email: str = Form(...),
+    json_file: UploadFile = File(...),
     db: Session = Depends(get_db)
 ):
-    """Create a new account with encrypted credentials"""
+    """Create a new account with JSON file upload (Frontend Compatible)"""
     try:
-        return crud.create_account(db=db, account=account)
+        # Read the uploaded JSON file
+        contents = await json_file.read()
+        credentials_json = contents.decode('utf-8')
+        
+        # Validate JSON format
+        try:
+            json.loads(credentials_json)
+        except json.JSONDecodeError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid JSON file format"
+            )
+        
+        # Create account data object
+        account_data = schemas.AccountCreate(
+            name=name,
+            admin_email=admin_email,
+            credentials_json=credentials_json
+        )
+        
+        return crud.create_account(db=db, account=account_data)
+        
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

@@ -21,6 +21,8 @@ const CreateCampaignView: React.FC<CreateCampaignViewProps> = ({ onBack, onSaveC
   const [subject, setSubject] = useState('');
   const [htmlBody, setHtmlBody] = useState('<h1>Your Email Title</h1>\n<p>This is a sample email body.</p>');
   const [recipientsText, setRecipientsText] = useState('');
+  const [csvFile, setCsvFile] = useState<File | null>(null);
+  const [uploadMode, setUploadMode] = useState<'text' | 'file'>('text');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errors, setErrors] = useState<{ [key: string]: string | undefined }>({});
 
@@ -37,13 +39,19 @@ const CreateCampaignView: React.FC<CreateCampaignViewProps> = ({ onBack, onSaveC
     }
     if (!subject.trim()) newErrors.subject = 'Subject is required.';
     if (!htmlBody.trim()) newErrors.htmlBody = 'HTML Body cannot be empty.';
-    if (!recipientsText.trim()) {
-        newErrors.recipientsText = 'Recipients list cannot be empty.';
+    if (uploadMode === 'text') {
+        if (!recipientsText.trim()) {
+            newErrors.recipientsText = 'Recipients list cannot be empty.';
+        } else {
+            const lines = recipientsText.trim().split('\\n');
+            const invalidLines = lines.filter(line => !/^\\s*\\S+@\\S+\\.\\S+\\s*(,.*)?\\s*$/.test(line));
+            if (invalidLines.length > 0) {
+                newErrors.recipientsText = `Invalid recipient format on ${invalidLines.length} line(s). Expected: email@example.com,Name`;
+            }
+        }
     } else {
-        const lines = recipientsText.trim().split('\n');
-        const invalidLines = lines.filter(line => !/^\s*\S+@\S+\.\S+\s*(,.*)?\s*$/.test(line));
-        if (invalidLines.length > 0) {
-            newErrors.recipientsText = `Invalid recipient format on ${invalidLines.length} line(s). Expected: email@example.com,Name`;
+        if (!csvFile) {
+            newErrors.csvFile = 'Please select a CSV file.';
         }
     }
     setErrors(newErrors);
@@ -60,22 +68,46 @@ const CreateCampaignView: React.FC<CreateCampaignViewProps> = ({ onBack, onSaveC
 
     setIsSubmitting(true);
     try {
+        let recipients_csv = '';
+        
+        if (uploadMode === 'file' && csvFile) {
+            // Read CSV file content
+            const fileContent = await new Promise<string>((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = () => resolve(reader.result as string);
+                reader.onerror = reject;
+                reader.readAsText(csvFile);
+            });
+            recipients_csv = fileContent;
+        } else {
+            recipients_csv = recipientsText;
+        }
+
         const newCampaign: CampaignCreatePayload = {
             name,
             from_name: fromName,
             from_email: fromEmail,
             subject,
             html_body: htmlBody,
-            recipients_csv: recipientsText
+            recipients_csv
         };
         await onSaveCampaign(newCampaign);
-        addToast({ message: `Campaign "${name}" created successfully as a draft!`, type: 'success' });
+        addToast({ message: `Campaign \"${name}\" created successfully as a draft!`, type: 'success' });
         // No need to reset form here, onSaveCampaign will navigate back which unmounts this component
     } catch (err) {
         addToast({ message: `Failed to create campaign: ${err instanceof Error ? err.message : 'Unknown error'}`, type: 'error' });
         console.error(err);
     } finally {
         setIsSubmitting(false);
+    }
+  };
+
+  const handleCsvFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files.length > 0) {
+      setCsvFile(e.target.files[0]);
+      setErrors(prev => ({ ...prev, csvFile: undefined }));
+    } else {
+      setCsvFile(null);
     }
   };
 
@@ -131,17 +163,71 @@ const CreateCampaignView: React.FC<CreateCampaignViewProps> = ({ onBack, onSaveC
                     />
                 </div>
                 <div className="space-y-4">
-                    <Textarea
-                        label="Recipients (CSV)"
-                        id="recipients"
-                        value={recipientsText}
-                        onChange={e => {setRecipientsText(e.target.value); setErrors(prev => ({...prev, recipientsText: undefined}));}}
-                        rows={10}
-                        placeholder="email@example.com,John Doe\nanother@example.com,Jane Smith"
-                        required
-                        helperText="One recipient per line in `email,name` format."
-                        error={errors.recipientsText}
-                    />
+                    <div>
+                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-3">Recipients Data</label>
+                        
+                        {/* Upload Mode Toggle */}
+                        <div className="flex space-x-4 mb-4">
+                            <label className="flex items-center">
+                                <input
+                                    type="radio"
+                                    name="uploadMode"
+                                    value="text"
+                                    checked={uploadMode === 'text'}
+                                    onChange={() => setUploadMode('text')}
+                                    className="mr-2"
+                                />
+                                <span className="text-sm">Manual Input</span>
+                            </label>
+                            <label className="flex items-center">
+                                <input
+                                    type="radio"
+                                    name="uploadMode"
+                                    value="file"
+                                    checked={uploadMode === 'file'}
+                                    onChange={() => setUploadMode('file')}
+                                    className="mr-2"
+                                />
+                                <span className="text-sm">CSV File Upload</span>
+                            </label>
+                        </div>
+
+                        {/* Manual Text Input */}
+                        {uploadMode === 'text' && (
+                            <Textarea
+                                label=""
+                                id="recipients"
+                                value={recipientsText}
+                                onChange={e => {setRecipientsText(e.target.value); setErrors(prev => ({...prev, recipientsText: undefined}));}}
+                                rows={10}
+                                placeholder="email@example.com,John Doe&#10;another@example.com,Jane Smith"
+                                required
+                                helperText="One recipient per line in email,name format."
+                                error={errors.recipientsText}
+                            />
+                        )}
+
+                        {/* CSV File Upload */}
+                        {uploadMode === 'file' && (
+                            <div>
+                                <input
+                                    type="file"
+                                    accept=".csv,.txt"
+                                    onChange={handleCsvFileChange}
+                                    className={`block w-full text-sm text-gray-900 border ${errors.csvFile ? 'border-red-500' : 'border-gray-300'} rounded-lg cursor-pointer bg-gray-50 dark:text-gray-400 focus:outline-none dark:bg-gray-700 dark:border-gray-600 dark:placeholder-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-primary-50 file:text-primary-700 hover:file:bg-primary-100`}
+                                />
+                                {errors.csvFile && <p className="mt-1 text-sm text-red-600 dark:text-red-400">{errors.csvFile}</p>}
+                                <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                                    Upload a CSV file with format: email,name (one per line)
+                                </p>
+                                {csvFile && (
+                                    <p className="mt-2 text-sm text-green-600 dark:text-green-400">
+                                        ✓ Selected: {csvFile.name} ({Math.round(csvFile.size / 1024)} KB)
+                                    </p>
+                                )}
+                            </div>
+                        )}
+                    </div>
                 </div>
                 <div className="md:col-span-2 space-y-4">
                     <Textarea
