@@ -5,6 +5,7 @@ import os
 import json
 import uuid
 import asyncio
+from datetime import datetime
 
 from models import (Account, Campaign, Recipient, CampaignStatus, RecipientStatus, 
                    User, UserStatus, RecipientAssignment, SendingBatch)
@@ -16,7 +17,7 @@ from core.config import settings
 
 # Account CRUD operations
 def create_account(db: Session, account: schemas.AccountCreate) -> Account:
-    """Create a new account with encrypted credentials"""
+    """Create a new account with encrypted credentials and automatically sync users"""
     # Create uploads directory if it doesn't exist
     os.makedirs(settings.upload_dir, exist_ok=True)
     
@@ -29,16 +30,144 @@ def create_account(db: Session, account: schemas.AccountCreate) -> Account:
     with open(credentials_path, 'w') as f:
         f.write(encrypted_credentials)
     
+    # Validate credentials first
+    credentials_dict = json.loads(account.credentials_json)
+    from utils.gmail_service import validate_gmail_credentials
+    validation_result = validate_gmail_credentials(credentials_dict, account.admin_email)
+    
+    if not validation_result.get('valid'):
+        raise Exception(f"Invalid credentials: {validation_result.get('error')}")
+    
     db_account = Account(
         name=account.name,
         admin_email=account.admin_email,
         credentials_path=credentials_path,
-        active=True
+        active=True,
+        user_count=validation_result.get('user_count', 0)
     )
     db.add(db_account)
     db.commit()
     db.refresh(db_account)
+    
+    # Automatically sync users from Google Workspace
+    try:
+        sync_result = sync_workspace_users(db, db_account.id, credentials_dict, account.admin_email)
+        if sync_result.get('success'):
+            print(f"Successfully synced {sync_result.get('user_count', 0)} users for account {db_account.name}")
+            # Update user count
+            db_account.user_count = sync_result.get('user_count', 0)
+            db.commit()
+        else:
+            print(f"Warning: Failed to sync users for account {db_account.name}: {sync_result.get('error')}")
+    except Exception as e:
+        print(f"Warning: User sync failed for account {db_account.name}: {str(e)}")
+    
     return db_account
+
+
+def sync_workspace_users(db: Session, account_id: int, credentials_dict: dict, admin_email: str):
+    """Sync users from Google Workspace using Admin Directory API"""
+    try:
+        from google.oauth2.service_account import Credentials
+        from googleapiclient.discovery import build
+        
+        # Required scopes for Gmail and Admin Directory
+        SCOPES = [
+            'https://www.googleapis.com/auth/gmail.send',
+            'https://www.googleapis.com/auth/gmail.compose', 
+            'https://www.googleapis.com/auth/gmail.insert',
+            'https://www.googleapis.com/auth/gmail.modify',
+            'https://www.googleapis.com/auth/gmail.readonly',
+            'https://www.googleapis.com/auth/admin.directory.user',
+            'https://www.googleapis.com/auth/admin.directory.user.security',
+            'https://www.googleapis.com/auth/admin.directory.orgunit',
+            'https://www.googleapis.com/auth/admin.directory.domain.readonly'
+        ]
+        
+        # Create credentials with admin delegation
+        credentials = Credentials.from_service_account_info(
+            credentials_dict, scopes=SCOPES
+        ).with_subject(admin_email)
+        
+        # Build Admin Directory service
+        admin_service = build('admin', 'directory_v1', credentials=credentials, cache_discovery=False)
+        
+        # Get domain from admin email
+        domain = admin_email.split('@')[1]
+        
+        # Fetch all users from the domain
+        users = []
+        page_token = None
+        
+        print(f"Fetching users from domain: {domain}")
+        
+        while True:
+            try:
+                result = admin_service.users().list(
+                    domain=domain,
+                    maxResults=500,
+                    pageToken=page_token,
+                    projection='full'
+                ).execute()
+                
+                domain_users = result.get('users', [])
+                print(f"Retrieved {len(domain_users)} users from API")
+                
+                for user in domain_users:
+                    # Include active, non-suspended users
+                    if (not user.get('suspended', False) and 
+                        not user.get('archived', False)):
+                        users.append({
+                            'email': user['primaryEmail'],
+                            'name': user.get('name', {}).get('fullName', user['primaryEmail']),
+                            'active': True,
+                            'suspended': user.get('suspended', False),
+                            'orgUnit': user.get('orgUnitPath', '/'),
+                            'lastLoginTime': user.get('lastLoginTime'),
+                            'creationTime': user.get('creationTime')
+                        })
+                
+                page_token = result.get('nextPageToken')
+                if not page_token:
+                    break
+                    
+            except Exception as api_error:
+                print(f"API error during user fetch: {str(api_error)}")
+                break
+        
+        print(f"Found {len(users)} active users")
+        
+        # Clear existing users for this account
+        deleted_count = db.query(User).filter(User.account_id == account_id).delete()
+        print(f"Deleted {deleted_count} existing users")
+        
+        # Add new users to database
+        for user_data in users:
+            db_user = User(
+                email=user_data['email'],
+                name=user_data['name'],
+                status=UserStatus.ACTIVE,
+                daily_sent_count=0,
+                hourly_sent_count=0,
+                account_id=account_id
+            )
+            db.add(db_user)
+        
+        # Update account with sync info
+        account = db.query(Account).filter(Account.id == account_id).first()
+        if account:
+            account.user_count = len(users)
+            account.last_sync_at = datetime.utcnow()
+        
+        db.commit()
+        
+        print(f"Successfully saved {len(users)} users to database")
+        return {"success": True, "user_count": len(users), "users": users}
+    
+    except Exception as e:
+        db.rollback()
+        print(f"Error syncing workspace users: {str(e)}")
+        return {"success": False, "error": str(e)}
 
 
 def get_account(db: Session, account_id: int) -> Optional[Account]:
