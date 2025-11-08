@@ -103,36 +103,55 @@ def sync_workspace_users(db: Session, account_id: int, credentials_dict: dict, a
         
         while True:
             try:
+                print(f"Fetching users page with token: {page_token}")
                 result = admin_service.users().list(
                     domain=domain,
                     maxResults=500,
                     pageToken=page_token,
-                    projection='full'
+                    projection='full',
+                    showDeleted=False
                 ).execute()
                 
                 domain_users = result.get('users', [])
-                print(f"Retrieved {len(domain_users)} users from API")
+                print(f"Retrieved {len(domain_users)} users from API page")
                 
                 for user in domain_users:
-                    # Include active, non-suspended users
-                    if (not user.get('suspended', False) and 
-                        not user.get('archived', False)):
+                    user_email = user.get('primaryEmail', '')
+                    user_name = user.get('name', {}).get('fullName', user_email)
+                    is_suspended = user.get('suspended', False)
+                    is_archived = user.get('archived', False)
+                    
+                    print(f"Processing user: {user_email}, suspended: {is_suspended}, archived: {is_archived}")
+                    
+                    # Include ALL non-suspended, non-archived users
+                    if not is_suspended and not is_archived and user_email:
                         users.append({
-                            'email': user['primaryEmail'],
-                            'name': user.get('name', {}).get('fullName', user['primaryEmail']),
+                            'email': user_email,
+                            'name': user_name,
                             'active': True,
-                            'suspended': user.get('suspended', False),
+                            'suspended': is_suspended,
                             'orgUnit': user.get('orgUnitPath', '/'),
                             'lastLoginTime': user.get('lastLoginTime'),
-                            'creationTime': user.get('creationTime')
+                            'creationTime': user.get('creationTime'),
+                            'isAdmin': user.get('isAdmin', False),
+                            'isDelegatedAdmin': user.get('isDelegatedAdmin', False)
                         })
+                        print(f"Added user: {user_email}")
+                    else:
+                        print(f"Skipped user: {user_email} (suspended: {is_suspended}, archived: {is_archived})")
                 
+                # Check for next page
                 page_token = result.get('nextPageToken')
+                print(f"Next page token: {page_token}")
+                
                 if not page_token:
+                    print("No more pages, stopping pagination")
                     break
                     
             except Exception as api_error:
                 print(f"API error during user fetch: {str(api_error)}")
+                import traceback
+                traceback.print_exc()
                 break
         
         print(f"Found {len(users)} active users")
