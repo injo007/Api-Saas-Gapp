@@ -36,8 +36,17 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
 def get_db() -> Session:
-    db = SessionLocal()
+    db = None
     try:
+        db = SessionLocal()
+        # Test connection
+        db.execute(text("SELECT 1"))
         yield db
+    except Exception as e:
+        logger.error(f"Database connection error: {e}")
+        if db:
+            db.rollback()
+        raise
     finally:
-        db.close()
+        if db:
+            db.close()

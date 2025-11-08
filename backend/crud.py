@@ -212,16 +212,32 @@ def update_account(db: Session, account_id: int, account_update: schemas.Account
 
 def delete_account(db: Session, account_id: int) -> bool:
     """Delete account and its credentials file"""
-    db_account = get_account(db, account_id)
-    if db_account:
-        # Delete credentials file
-        if os.path.exists(db_account.credentials_path):
-            os.remove(db_account.credentials_path)
+    try:
+        db_account = get_account(db, account_id)
+        if not db_account:
+            return False
         
+        # Delete credentials file safely
+        try:
+            if db_account.credentials_path and os.path.exists(db_account.credentials_path):
+                os.remove(db_account.credentials_path)
+        except Exception as e:
+            print(f"Warning: Could not delete credentials file: {e}")
+        
+        # Delete all related users first (cascade should handle this, but being explicit)
+        db.query(User).filter(User.account_id == account_id).delete()
+        
+        # Delete the account
         db.delete(db_account)
         db.commit()
+        
+        print(f"Successfully deleted account {account_id}")
         return True
-    return False
+    
+    except Exception as e:
+        db.rollback()
+        print(f"Error deleting account {account_id}: {e}")
+        return False
 
 
 def get_account_credentials(account: Account) -> dict:
@@ -363,7 +379,20 @@ def create_users_for_account(db: Session, account_id: int, users_data: List[dict
 
 def get_account_users(db: Session, account_id: int) -> List[User]:
     """Get all users for an account"""
-    return db.query(User).filter(User.account_id == account_id).all()
+    try:
+        # Verify account exists first
+        account = get_account(db, account_id)
+        if not account:
+            print(f"Account {account_id} not found")
+            return []
+        
+        users = db.query(User).filter(User.account_id == account_id).all()
+        print(f"Retrieved {len(users)} users for account {account_id}")
+        return users
+    
+    except Exception as e:
+        print(f"Error retrieving users for account {account_id}: {e}")
+        return []
 
 
 def update_user_status(db: Session, user_id: int, status: UserStatus, error: str = None):
